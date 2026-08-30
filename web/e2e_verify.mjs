@@ -26,8 +26,22 @@ async function runVerification() {
   serverProcess.stdout.on('data', (d) => process.stdout.write(`[SERVER] ${d}`));
   serverProcess.stderr.on('data', (d) => process.stderr.write(`[SERVER ERR] ${d}`));
 
-  // Wait 4 seconds for server startup and initial controller poll
-  await new Promise((r) => setTimeout(r, 4000));
+  // Wait for server startup and initial controller poll
+  let connected = false;
+  for (let i = 0; i < 15; i++) {
+    await new Promise((r) => setTimeout(r, 600));
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/api/v1/system`);
+      if (res.ok) {
+        connected = true;
+        break;
+      }
+    } catch {}
+  }
+  if (!connected) {
+    console.log('Server not responding yet, waiting extra 2s...');
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 
   const consoleErrors = [];
   const networkFailures = [];
@@ -113,41 +127,60 @@ async function runVerification() {
     if (await schedNav.count() > 0) {
       await schedNav.first().click();
       await page.waitForTimeout(1000);
-      console.log('✓ Opened Schedules Master Matrix View');
-      await page.screenshot({ path: path.join(__dirname, 'schedules_matrix.png') });
+      console.log('✓ Opened Schedules Hub (Activity Programs Mode)');
+      await page.screenshot({ path: path.join(__dirname, 'schedules_programs.png') });
 
-      // Switch to Weekly 7-Day Planner
-      const weeklyBtn = page.locator('button:has-text("Weekly 7-Day Planner")');
-      if (await weeklyBtn.count() > 0) {
-        await weeklyBtn.first().click();
-        await page.waitForTimeout(800);
-        console.log('✓ Switched to Weekly 7-Day Planner');
-        await page.screenshot({ path: path.join(__dirname, 'schedules_weekly.png') });
+      // 5.1 Test Activity Program Edit Modal
+      const editProgBtn = page.locator('button:has-text("Edit Routine & Rooms")').first();
+      if (await editProgBtn.count() > 0) {
+        await editProgBtn.click();
+        await page.waitForTimeout(400);
+        console.log('✓ Opened Activity Program Edit Modal');
+        const cancelBtn = page.locator('button:has-text("Cancel")').first();
+        if (await cancelBtn.count() > 0) await cancelBtn.click();
+        await page.waitForTimeout(300);
       }
 
-      // Switch to Multi-Zone Batch Editor
-      const editorBtn = page.locator('button:has-text("Multi-Zone Batch Editor")');
-      if (await editorBtn.count() > 0) {
-        await editorBtn.first().click();
+      // 5.2 Switch to Weekly Visual Hub
+      const plannerBtn = page.locator('button:has-text("Weekly Visual Hub")');
+      if (await plannerBtn.count() > 0) {
+        await plannerBtn.click();
         await page.waitForTimeout(800);
-        console.log('✓ Switched to Multi-Zone Batch Editor');
-        await page.screenshot({ path: path.join(__dirname, 'schedules_editor.png') });
+        console.log('✓ Switched to Weekly Visual Hub');
+        await page.screenshot({ path: path.join(__dirname, 'schedules_planner.png') });
 
         // Open Add Event modal
-        const addEvBtn = page.locator('button:has-text("Add Event")').first();
+        const addEvBtn = page.locator('button:has-text("Add Scheduled Event")').first();
         if (await addEvBtn.count() > 0) {
           await addEvBtn.click();
           await page.waitForTimeout(400);
           console.log('✓ Opened Add Scheduled Event Modal');
-          await page.screenshot({ path: path.join(__dirname, 'schedules_modal.png') });
-
-          const cancelBtn = page.locator('button:has-text("Cancel")');
-          if (await cancelBtn.count() > 0) {
-            await cancelBtn.first().click();
-            await page.waitForTimeout(300);
-            console.log('✓ Closed Add Scheduled Event Modal');
-          }
+          const cancelBtn = page.locator('button:has-text("Cancel")').first();
+          if (await cancelBtn.count() > 0) await cancelBtn.click();
+          await page.waitForTimeout(300);
+          console.log('✓ Closed Add Scheduled Event Modal');
         }
+
+        // Open Duplicate Modal
+        const dupBtn = page.locator('button:has-text("Duplicate Day to...")').first();
+        if (await dupBtn.count() > 0) {
+          await dupBtn.click();
+          await page.waitForTimeout(400);
+          console.log('✓ Opened Duplicate Day Modal');
+          const cancelBtn = page.locator('button:has-text("Cancel")').first();
+          if (await cancelBtn.count() > 0) await cancelBtn.click();
+          await page.waitForTimeout(300);
+          console.log('✓ Closed Duplicate Day Modal');
+        }
+      }
+
+      // 5.3 Switch to Master Matrix Grid
+      const matrixBtn = page.locator('button:has-text("Master Matrix Grid")');
+      if (await matrixBtn.count() > 0) {
+        await matrixBtn.click();
+        await page.waitForTimeout(800);
+        console.log('✓ Switched to Master Matrix Grid');
+        await page.screenshot({ path: path.join(__dirname, 'schedules_matrix.png') });
       }
     }
 

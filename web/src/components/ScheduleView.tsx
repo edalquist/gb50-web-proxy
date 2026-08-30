@@ -29,6 +29,8 @@ import {
 interface ScheduleViewProps {
   groups: GroupStatus[];
   tempUnit: 'F' | 'C';
+  activeMode?: ScheduleMode;
+  onModeChange?: (mode: ScheduleMode) => void;
 }
 
 type ScheduleMode = 'programs' | 'planner' | 'matrix';
@@ -110,8 +112,24 @@ const DEFAULT_PROGRAMS: ActivityProgram[] = [
   },
 ];
 
-export const ScheduleView: React.FC<ScheduleViewProps> = ({ groups, tempUnit }) => {
-  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>('programs');
+export const ScheduleView: React.FC<ScheduleViewProps> = ({ 
+  groups, 
+  tempUnit,
+  activeMode,
+  onModeChange,
+}) => {
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>(activeMode || 'programs');
+
+  useEffect(() => {
+    if (activeMode && activeMode !== scheduleMode) {
+      setScheduleMode(activeMode);
+    }
+  }, [activeMode]);
+
+  const handleSetMode = (mode: ScheduleMode) => {
+    setScheduleMode(mode);
+    onModeChange?.(mode);
+  };
 
   // Activity Programs state (with localStorage persistence)
   const [programs, setPrograms] = useState<ActivityProgram[]>(() => {
@@ -463,7 +481,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({ groups, tempUnit }) 
         {/* 3 Switchable View Mode Buttons */}
         <div className="flex items-center bg-slate-950 border border-slate-800 p-1.5 rounded-2xl shadow-inner gap-1">
           <button
-            onClick={() => setScheduleMode('programs')}
+            onClick={() => handleSetMode('programs')}
             className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-xl transition ${
               scheduleMode === 'programs'
                 ? 'bg-purple-600 text-white shadow-lg shadow-purple-900/40'
@@ -474,7 +492,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({ groups, tempUnit }) 
           </button>
 
           <button
-            onClick={() => setScheduleMode('planner')}
+            onClick={() => handleSetMode('planner')}
             className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-xl transition ${
               scheduleMode === 'planner'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40'
@@ -485,7 +503,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({ groups, tempUnit }) 
           </button>
 
           <button
-            onClick={() => setScheduleMode('matrix')}
+            onClick={() => handleSetMode('matrix')}
             className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-xl transition ${
               scheduleMode === 'matrix'
                 ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/40'
@@ -1047,7 +1065,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({ groups, tempUnit }) 
                               setPrimaryGroupId(g.group_id);
                               setSelectedGroupIds([g.group_id]);
                               setSelectedDay(d.id);
-                              setScheduleMode('planner');
+                              handleSetMode('planner');
                             }}
                             className={`w-full py-1.5 px-2 rounded-lg font-bold transition border ${
                               events.length > 0 && onEvent

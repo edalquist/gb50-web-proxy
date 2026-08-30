@@ -10,6 +10,7 @@ import {
   subscribeToWebSocket 
 } from './api';
 import { GroupStatus, SystemInfo, GroupControlRequest } from './types';
+import { useAppRouter, MainTab } from './router';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { VentilationView } from './components/VentilationView';
@@ -18,10 +19,10 @@ import { AdminPanel } from './components/AdminPanel';
 import { ZoneControlModal } from './components/ZoneControlModal';
 
 export const App: React.FC = () => {
+  const { route, goTo } = useAppRouter();
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [groups, setGroups] = useState<GroupStatus[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'ventilation' | 'schedules' | 'admin'>('dashboard');
   const [tempUnit, setTempUnit] = useState<'F' | 'C'>('F');
   const [selectedGroup, setSelectedGroup] = useState<GroupStatus | null>(null);
   const [loadingPreset, setLoadingPreset] = useState(false);
@@ -59,6 +60,18 @@ export const App: React.FC = () => {
     return () => unsubscribe();
   }, [loadData]);
 
+  // Deep Link / URL support for direct modal: /zone/:id or /dashboard/zone/:id
+  useEffect(() => {
+    if (route.groupId && groups.length > 0) {
+      const target = groups.find((g) => g.group_id === route.groupId);
+      if (target) {
+        setSelectedGroup(target);
+      }
+    } else if (!route.groupId && selectedGroup && route.path.startsWith('/zone')) {
+      setSelectedGroup(null);
+    }
+  }, [route.groupId, groups]);
+
   // Keep selectedGroup in sync with live updates
   useEffect(() => {
     if (selectedGroup) {
@@ -66,6 +79,19 @@ export const App: React.FC = () => {
       if (live) setSelectedGroup(live);
     }
   }, [groups]);
+
+  // Navigation tab change
+  const handleTabChange = (tab: MainTab) => {
+    if (tab === 'dashboard') {
+      goTo('/dashboard');
+    } else if (tab === 'ventilation') {
+      goTo('/ventilation');
+    } else if (tab === 'schedules') {
+      goTo('/schedules/' + (route.scheduleSubTab || 'programs'));
+    } else if (tab === 'admin') {
+      goTo('/admin/' + (route.adminSubTab || 'system'));
+    }
+  };
 
   // Actions
   const handleTogglePower = async (group: GroupStatus) => {
@@ -101,6 +127,18 @@ export const App: React.FC = () => {
     await loadData();
   };
 
+  const handleOpenZoneModal = (group: GroupStatus) => {
+    setSelectedGroup(group);
+    goTo(`/zone/${group.group_id}`);
+  };
+
+  const handleCloseZoneModal = () => {
+    setSelectedGroup(null);
+    if (window.location.pathname.includes('/zone/')) {
+      goTo('/dashboard');
+    }
+  };
+
   const runningCount = groups.filter((g) => g.drive === 'ON').length;
   const dirtyFilterCount = groups.filter((g) => g.filter_dirty).length;
 
@@ -110,8 +148,8 @@ export const App: React.FC = () => {
       <Header
         systemInfo={systemInfo}
         wsConnected={wsConnected}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        activeTab={route.tab}
+        setActiveTab={handleTabChange}
         tempUnit={tempUnit}
         setTempUnit={setTempUnit}
         onApplyPreset={handleApplyPreset}
@@ -123,18 +161,23 @@ export const App: React.FC = () => {
 
       {/* Main View Area */}
       <main className="flex-1">
-        {activeTab === 'dashboard' && (
+        {route.tab === 'dashboard' && (
           <Dashboard
             groups={groups}
             tempUnit={tempUnit}
             onTogglePower={handleTogglePower}
-            onOpenDetails={(group) => setSelectedGroup(group)}
+            onOpenDetails={handleOpenZoneModal}
             onResetFilter={handleResetFilter}
             onBatchControl={handleBatchControl}
+            initialFilter={route.params.get('floor') || route.params.get('filter') || undefined}
+            onFilterChange={(flr) => {
+              const url = flr === 'all' ? '/dashboard' : `/dashboard?floor=${flr}`;
+              goTo(url, true);
+            }}
           />
         )}
 
-        {activeTab === 'ventilation' && (
+        {route.tab === 'ventilation' && (
           <VentilationView
             groups={groups}
             onControlGroup={handleControlGroup}
@@ -142,26 +185,33 @@ export const App: React.FC = () => {
           />
         )}
 
-        {activeTab === 'schedules' && (
-          <ScheduleView groups={groups} tempUnit={tempUnit} />
+        {route.tab === 'schedules' && (
+          <ScheduleView 
+            groups={groups} 
+            tempUnit={tempUnit}
+            activeMode={route.scheduleSubTab}
+            onModeChange={(mode) => goTo(`/schedules/${mode}`)}
+          />
         )}
 
-        {activeTab === 'admin' && (
+        {route.tab === 'admin' && (
           <AdminPanel
             systemInfo={systemInfo}
             groups={groups}
             tempUnit={tempUnit}
             onRefreshGroups={loadData}
+            activeSubTab={route.adminSubTab}
+            onSubTabChange={(sub) => goTo(`/admin/${sub}`)}
           />
         )}
       </main>
 
-      {/* Modal Dialog for Group Control */}
+      {/* Modal Dialog for Group Control (Deep Linkable / Sharable) */}
       {selectedGroup && (
         <ZoneControlModal
           group={selectedGroup}
           tempUnit={tempUnit}
-          onClose={() => setSelectedGroup(null)}
+          onClose={handleCloseZoneModal}
           onSave={handleControlGroup}
           onRename={handleRenameGroup}
           onResetFilter={handleResetFilter}

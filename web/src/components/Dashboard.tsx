@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Search, 
   Layers, 
@@ -15,6 +15,8 @@ interface DashboardProps {
   onOpenDetails: (group: GroupStatus) => void;
   onResetFilter: (groupId: number) => void;
   onBatchControl: (updates: Record<number, GroupControlRequest>) => Promise<void>;
+  initialFilter?: string;
+  onFilterChange?: (filter: string) => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -24,9 +26,24 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onOpenDetails,
   onResetFilter,
   onBatchControl,
+  initialFilter,
+  onFilterChange,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterFloor, setFilterFloor] = useState<'all' | 'floor1' | 'floor2' | 'lossnay' | 'running' | 'dirty'>('all');
+  const [filterFloor, setFilterFloor] = useState<'all' | 'floor1' | 'floor2' | 'lossnay' | 'running' | 'dirty'>(
+    (initialFilter as any) || 'all'
+  );
+
+  useEffect(() => {
+    if (initialFilter) {
+      setFilterFloor(initialFilter as any);
+    }
+  }, [initialFilter]);
+
+  const handleSelectFilter = (id: string) => {
+    setFilterFloor(id as any);
+    onFilterChange?.(id);
+  };
 
   // Categorize units
   const floor1Groups = useMemo(() => groups.filter((g) => (g.floor ?? (((g as { floor?: number }).floor ?? 1) === 1 ? 1 : 2)) === 1), [groups]);
@@ -169,7 +186,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           ].map(({ id, label }) => (
             <button
               key={id}
-              onClick={() => setFilterFloor(id as any)}
+              onClick={() => handleSelectFilter(id)}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
                 filterFloor === id
                   ? 'bg-blue-600 text-white shadow-sm'

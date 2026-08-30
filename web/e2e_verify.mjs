@@ -242,6 +242,34 @@ async function runVerification() {
       }
     }
 
+    // 7. Testing Deep Links & Direct URL Navigation
+    console.log('\n--- 7. Testing Deep Link URLs & Direct Navigation ---');
+    
+    // 7.1 Direct Link to Ventilation
+    await page.goto(`http://127.0.0.1:${PORT}/ventilation`, { waitUntil: 'networkidle' });
+    console.log('✓ Loaded direct URL: /ventilation');
+
+    // 7.2 Direct Link to Schedules Planner
+    await page.goto(`http://127.0.0.1:${PORT}/schedules/planner`, { waitUntil: 'networkidle' });
+    console.log('✓ Loaded direct URL: /schedules/planner');
+
+    // 7.3 Direct Link to Schedules Matrix
+    await page.goto(`http://127.0.0.1:${PORT}/schedules/matrix`, { waitUntil: 'networkidle' });
+    console.log('✓ Loaded direct URL: /schedules/matrix');
+
+    // 7.4 Direct Link to Admin Zones
+    await page.goto(`http://127.0.0.1:${PORT}/admin/zones`, { waitUntil: 'networkidle' });
+    console.log('✓ Loaded direct URL: /admin/zones');
+
+    // 7.5 Direct Link to Zone 2 Modal
+    await page.goto(`http://127.0.0.1:${PORT}/zone/2`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(600);
+    const modalHeading = page.locator('h3:has-text("Room 107"), h3:has-text("Group 2"), h3:has-text("FC1-2")');
+    if (await modalHeading.count() > 0) {
+      console.log('✓ Direct link to /zone/2 successfully opened Zone Control Modal');
+    }
+    await page.screenshot({ path: path.join(__dirname, 'zone_2_direct_link.png') });
+
     console.log('\n========================================');
     console.log('          VERIFICATION RESULTS          ');
     console.log('========================================');

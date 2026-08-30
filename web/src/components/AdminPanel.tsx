@@ -40,21 +40,44 @@ import {
   registerOptionLicense
 } from '../api';
 
+type AdminSubTab = 
+  | 'system' 
+  | 'zones' 
+  | 'interlocks' 
+  | 'clock' 
+  | 'setback' 
+  | 'licenses' 
+  | 'security' 
+  | 'diagnostics';
+
 interface AdminPanelProps {
   systemInfo: SystemInfo | null;
   groups: GroupStatus[];
   tempUnit?: 'F' | 'C';
   onRefreshGroups: () => Promise<void>;
+  activeSubTab?: AdminSubTab;
+  onSubTabChange?: (tab: AdminSubTab) => void;
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   systemInfo,
   groups,
   onRefreshGroups,
+  activeSubTab,
+  onSubTabChange,
 }) => {
-  const [subTab, setSubTab] = useState<
-    'system' | 'zones' | 'interlocks' | 'clock' | 'setback' | 'licenses' | 'security' | 'diagnostics'
-  >('system');
+  const [subTab, setSubTab] = useState<AdminSubTab>(activeSubTab || 'system');
+
+  useEffect(() => {
+    if (activeSubTab && activeSubTab !== subTab) {
+      setSubTab(activeSubTab);
+    }
+  }, [activeSubTab]);
+
+  const handleSelectSubTab = (tab: AdminSubTab) => {
+    setSubTab(tab);
+    onSubTabChange?.(tab);
+  };
 
   // --- Subtab 1: System Data State ---
   const [sysForm, setSysForm] = useState({
@@ -524,7 +547,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         ].map(({ id, label, icon: Icon }) => (
           <button
             key={id}
-            onClick={() => setSubTab(id as any)}
+            onClick={() => handleSelectSubTab(id as any)}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition ${
               subTab === id
                 ? 'bg-blue-600 text-white shadow-sm'

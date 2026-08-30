@@ -211,6 +211,31 @@ async function runVerification() {
           await page.waitForTimeout(1000);
           await page.screenshot({ path: path.join(__dirname, st.file) });
           console.log(`✓ Loaded sub-tab: ${st.label}`);
+
+          // Test Group CRUD modals on Zone & Hardware Mapping
+          if (st.label === 'Zone & Hardware Mapping') {
+            const addGroupBtn = page.locator('button:has-text("Provision New Group")');
+            if (await addGroupBtn.count() > 0) {
+              await addGroupBtn.first().click();
+              await page.waitForTimeout(400);
+              console.log('✓ Opened Provision New Group Modal');
+              const cancelBtn = page.locator('button:has-text("Cancel")').first();
+              if (await cancelBtn.count() > 0) await cancelBtn.click();
+              await page.waitForTimeout(300);
+              console.log('✓ Closed Provision New Group Modal');
+            }
+
+            const editGroupBtn = page.locator('button:has-text("Edit")').first();
+            if (await editGroupBtn.count() > 0) {
+              await editGroupBtn.click();
+              await page.waitForTimeout(400);
+              console.log('✓ Opened Edit Group Modal');
+              const cancelBtn = page.locator('button:has-text("Cancel")').first();
+              if (await cancelBtn.count() > 0) await cancelBtn.click();
+              await page.waitForTimeout(300);
+              console.log('✓ Closed Edit Group Modal');
+            }
+          }
         } else {
           console.warn(`Sub-tab button not found: ${st.label}`);
         }

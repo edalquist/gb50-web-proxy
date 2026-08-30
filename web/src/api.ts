@@ -1,4 +1,12 @@
-import { GroupStatus, SystemInfo, GroupControlRequest, ScheduleItem, AlarmRecord } from './types';
+import { 
+  GroupStatus, 
+  SystemInfo, 
+  GroupControlRequest, 
+  ScheduleItem, 
+  AlarmRecord,
+  GroupConfigPayload,
+  UnassignedAddressesResponse
+} from './types';
 
 const API_BASE = '/api/v1';
 
@@ -281,4 +289,47 @@ export function subscribeToWebSocket(
     if (reconnectTimer) clearTimeout(reconnectTimer);
     ws?.close();
   };
+}
+
+export async function createGroup(payload: GroupConfigPayload): Promise<{ status: string; message: string; group_id: number }> {
+  const res = await fetch(`${API_BASE}/groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to create group: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function updateGroupConfig(groupId: number, payload: GroupConfigPayload): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE}/groups/${groupId}/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to update group config: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function deleteGroup(groupId: number): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE}/groups/${groupId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to delete group: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchUnassignedAddresses(): Promise<UnassignedAddressesResponse> {
+  const res = await fetch(`${API_BASE}/unassigned-addresses`);
+  if (!res.ok) throw new Error(`Failed to fetch unassigned addresses: ${res.statusText}`);
+  return res.json();
 }

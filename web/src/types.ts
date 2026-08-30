@@ -161,3 +161,20 @@ export interface ActivityProgram {
   fan_speed: FanSpeed;
   assigned_group_ids: number[];
 }
+
+export interface GroupConfigPayload {
+  group_id?: number;
+  name: string;
+  primary_ic: number;
+  model: 'IC' | 'LC';
+  slave_ics: number[];
+  rcs?: number[];
+  floor?: number;
+}
+
+export interface UnassignedAddressesResponse {
+  assigned_count: number;
+  unassigned_count: number;
+  unassigned_addresses: number[];
+  assigned_addresses: number[];
+}

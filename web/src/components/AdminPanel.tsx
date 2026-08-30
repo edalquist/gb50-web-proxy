@@ -18,7 +18,7 @@ import {
   Activity,
   Filter
 } from 'lucide-react';
-import { GroupStatus, SystemInfo, AlarmRecord } from '../types';
+import { GroupStatus, SystemInfo, AlarmRecord, GroupConfigPayload } from '../types';
 import { 
   fetchAlarms, 
   clearAlarmHistory,
@@ -26,7 +26,10 @@ import {
   syncClock, 
   fetchUsers, 
   changeUserPassword, 
-  configureGroupHardware, 
+  createGroup,
+  updateGroupConfig,
+  deleteGroup,
+  fetchUnassignedAddresses,
   updateSystemInfo,
   fetchInterlocks,
   updateInterlocks,
@@ -107,21 +110,108 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // --- Subtab 2: Group Hardware Mapping State ---
+  // --- Subtab 2: Group Hardware Mapping & CRUD State ---
   const [selectedGroupConfig, setSelectedGroupConfig] = useState<GroupStatus | null>(null);
   const [editGroupName, setEditGroupName] = useState('');
   const [editPrimaryIc, setEditPrimaryIc] = useState(1);
-  const [editModel, setEditModel] = useState('IC');
+  const [editModel, setEditModel] = useState<'IC' | 'LC'>('IC');
+  const [editFloor, setEditFloor] = useState(1);
   const [editSlavesStr, setEditSlavesStr] = useState('');
   const [editRcsStr, setEditRcsStr] = useState('');
   const [groupConfigMsg, setGroupConfigMsg] = useState<string | null>(null);
   const [isSavingGroupConfig, setIsSavingGroupConfig] = useState(false);
 
+  // Unassigned addresses state
+  const [unassignedAddresses, setUnassignedAddresses] = useState<number[]>([]);
+  const [loadingUnassigned, setLoadingUnassigned] = useState(false);
+
+  // Create Group Modal State
+  const [isCreateGroupOpen, setIsCreateGroupOpen] = useState(false);
+  const [newGroupId, setNewGroupId] = useState(1);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newPrimaryIc, setNewPrimaryIc] = useState(1);
+  const [newModel, setNewModel] = useState<'IC' | 'LC'>('IC');
+  const [newFloor, setNewFloor] = useState(1);
+  const [newSlavesStr, setNewSlavesStr] = useState('');
+
+  // Delete confirmation modal state
+  const [deleteConfirmGroup, setDeleteConfirmGroup] = useState<GroupStatus | null>(null);
+  const [isDeletingGroup, setIsDeletingGroup] = useState(false);
+
+  const loadUnassignedAddresses = async () => {
+    setLoadingUnassigned(true);
+    try {
+      const data = await fetchUnassignedAddresses();
+      setUnassignedAddresses(data.unassigned_addresses || []);
+    } catch (err) {
+      console.error('Failed to load unassigned addresses:', err);
+    } finally {
+      setLoadingUnassigned(false);
+    }
+  };
+
+  useEffect(() => {
+    if (subTab === 'zones') {
+      loadUnassignedAddresses();
+    }
+  }, [subTab, groups]);
+
+  const openCreateGroupModal = () => {
+    // Find first unused Group ID (1..50)
+    const existingGids = new Set(groups.map((g) => g.group_id));
+    let nextGid = 1;
+    while (existingGids.has(nextGid) && nextGid <= 50) nextGid++;
+
+    // Find first unassigned M-NET address
+    const firstFreeAddr = unassignedAddresses.length > 0 ? unassignedAddresses[0] : nextGid;
+
+    setNewGroupId(nextGid);
+    setNewGroupName(`Zone ${nextGid}`);
+    setNewPrimaryIc(firstFreeAddr);
+    setNewModel('IC');
+    setNewFloor(nextGid > 18 ? 2 : 1);
+    setNewSlavesStr('');
+    setGroupConfigMsg(null);
+    setIsCreateGroupOpen(true);
+  };
+
+  const handleCreateGroup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingGroupConfig(true);
+    setGroupConfigMsg(null);
+    try {
+      const slaves = newSlavesStr
+        .split(',')
+        .map((s) => parseInt(s.trim()))
+        .filter((n) => !isNaN(n));
+
+      const payload: GroupConfigPayload = {
+        group_id: newGroupId,
+        name: newGroupName,
+        primary_ic: newPrimaryIc,
+        model: newModel,
+        slave_ics: slaves,
+        floor: newFloor,
+      };
+
+      const res = await createGroup(payload);
+      setGroupConfigMsg(res.message || `Successfully created Group ${newGroupId}`);
+      await onRefreshGroups();
+      await loadUnassignedAddresses();
+      setIsCreateGroupOpen(false);
+    } catch (err: any) {
+      setGroupConfigMsg(`Error: ${err.message}`);
+    } finally {
+      setIsSavingGroupConfig(false);
+    }
+  };
+
   const openGroupConfig = (g: GroupStatus) => {
     setSelectedGroupConfig(g);
     setEditGroupName(g.name);
     setEditPrimaryIc(g.address);
-    setEditModel(g.model);
+    setEditModel(g.model === 'LC' ? 'LC' : 'IC');
+    setEditFloor(((g as { floor?: number }).floor ?? 1) === 2 ? 2 : 1);
     setEditSlavesStr(g.slave_addresses.join(', '));
     setEditRcsStr('');
     setGroupConfigMsg(null);
@@ -142,19 +232,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         .map((s) => parseInt(s.trim()))
         .filter((n) => !isNaN(n));
 
-      const res = await configureGroupHardware(selectedGroupConfig.group_id, {
+      const payload: GroupConfigPayload = {
         name: editGroupName,
         primary_ic: editPrimaryIc,
         model: editModel,
         slave_ics: slaves,
         rcs: rcs,
-      });
+        floor: editFloor,
+      };
+
+      const res = await updateGroupConfig(selectedGroupConfig.group_id, payload);
       setGroupConfigMsg(res.message);
       await onRefreshGroups();
+      await loadUnassignedAddresses();
+      setSelectedGroupConfig(null);
     } catch (err: any) {
       setGroupConfigMsg(`Error: ${err.message}`);
     } finally {
       setIsSavingGroupConfig(false);
+    }
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!deleteConfirmGroup) return;
+    setIsDeletingGroup(true);
+    try {
+      await deleteGroup(deleteConfirmGroup.group_id);
+      setDeleteConfirmGroup(null);
+      await onRefreshGroups();
+      await loadUnassignedAddresses();
+    } catch (err: any) {
+      alert(`Failed to delete group: ${err.message}`);
+    } finally {
+      setIsDeletingGroup(false);
     }
   };
 
@@ -623,60 +733,138 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* Subtab 2: Group Hardware & M-Net Mapping (100% GroupSettingsPanel coverage) */}
+      {/* Subtab 2: Group Hardware & M-Net Mapping (Full CRUD Management) */}
       {subTab === 'zones' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="border-b border-slate-800 pb-4 flex items-center justify-between">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-6 shadow-xl">
+          <div className="border-b border-slate-800 pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <h3 className="font-bold text-base text-slate-100 flex items-center gap-2">
                 <Layers className="w-5 h-5 text-blue-400" />
                 Group Hardware Configuration & M-Net Topology
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                Assign primary Indoor Unit addresses (1..50), secondary slave units, and remote controllers (101..200).
+                Provision new groups, rename zones, assign primary/slave M-Net addresses (1..50), configure floor mappings, or unassign groups.
               </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={openCreateGroupModal}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-blue-900 transition flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4" /> Provision New Group
+              </button>
+              <button
+                onClick={() => {
+                  onRefreshGroups();
+                  loadUnassignedAddresses();
+                }}
+                className="p-2 hover:bg-slate-800 rounded-xl text-slate-400 hover:text-white transition"
+                title="Refresh hardware topology"
+              >
+                <RefreshCw className={`w-4 h-4 ${loadingUnassigned ? 'animate-spin' : ''}`} />
+              </button>
             </div>
           </div>
 
+          {/* Unassigned M-NET Addresses Banner */}
+          <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-400" />
+                M-NET Hardware Address Status ({groups.length} Groups Configured • {unassignedAddresses.length} Addresses Available)
+              </span>
+              <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                Addresses 1 to 50
+              </span>
+            </div>
+
+            {unassignedAddresses.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <span className="text-[11px] text-slate-400 self-center mr-1">Available to assign:</span>
+                {unassignedAddresses.slice(0, 20).map((addr) => (
+                  <span
+                    key={addr}
+                    className="px-2 py-0.5 bg-slate-900 text-slate-300 rounded font-mono text-[10px] border border-slate-800"
+                  >
+                    Addr {addr}
+                  </span>
+                ))}
+                {unassignedAddresses.length > 20 && (
+                  <span className="text-[10px] text-slate-500 self-center font-mono">
+                    +{unassignedAddresses.length - 20} more...
+                  </span>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-amber-400 italic">
+                All 50 M-NET hardware addresses are currently mapped to active groups.
+              </p>
+            )}
+          </div>
+
+          {groupConfigMsg && (
+            <div className="p-3.5 bg-blue-500/10 border border-blue-500/30 rounded-2xl text-xs font-semibold text-blue-300 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0" />
+              <span>{groupConfigMsg}</span>
+            </div>
+          )}
+
+          {/* Group Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-slate-300">
               <thead className="bg-slate-950/80 text-slate-400 uppercase tracking-wider font-bold border-b border-slate-800">
                 <tr>
                   <th className="p-3">Group</th>
                   <th className="p-3">Display Name</th>
+                  <th className="p-3">Floor</th>
                   <th className="p-3">Model</th>
                   <th className="p-3">Primary M-Net Address</th>
                   <th className="p-3">Secondary Slave Units</th>
-                  <th className="p-3 text-right">Configure</th>
+                  <th className="p-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
+              <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
                 {groups.map((g) => (
                   <tr key={g.group_id} className="hover:bg-slate-800/40 transition">
-                    <td className="p-3 font-mono font-bold text-blue-400">Group {g.group_id}</td>
-                    <td className="p-3 font-bold text-slate-100">{g.name}</td>
-                    <td className="p-3">
+                    <td className="p-3 font-bold text-blue-400">Group {g.group_id}</td>
+                    <td className="p-3 font-sans font-bold text-slate-100">{g.name}</td>
+                    <td className="p-3 font-sans">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                        {((g as { floor?: number }).floor ?? 1) === 2 ? 'Floor 2' : 'Floor 1'}
+                      </span>
+                    </td>
+                    <td className="p-3 font-sans">
                       <span
-                        className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                           g.model === 'LC'
                             ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                             : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
                         }`}
                       >
-                        {g.model === 'LC' ? 'LC (LOSSNAY)' : 'IC (Indoor Fan Coil)'}
+                        {g.model === 'LC' ? 'LC (LOSSNAY)' : 'IC (Indoor Unit)'}
                       </span>
                     </td>
-                    <td className="p-3 font-mono">Address {g.address}</td>
+                    <td className="p-3">Address {g.address}</td>
                     <td className="p-3 text-slate-400">
                       {g.slave_addresses.length > 0 ? g.slave_addresses.join(', ') : 'None'}
                     </td>
-                    <td className="p-3 text-right">
-                      <button
-                        onClick={() => openGroupConfig(g)}
-                        className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-semibold transition"
-                      >
-                        Edit Hardware
-                      </button>
+                    <td className="p-3 text-right font-sans">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => openGroupConfig(g)}
+                          className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-semibold transition"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => setDeleteConfirmGroup(g)}
+                          className="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded-lg font-semibold transition border border-rose-800/40"
+                          title="Delete Group"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -684,13 +872,134 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </table>
           </div>
 
-          {/* Group Hardware Edit Drawer / Modal */}
-          {selectedGroupConfig && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-              <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl p-6 space-y-5">
+          {/* MODAL 1: Create / Provision New Group */}
+          {isCreateGroupOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+              <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-lg shadow-2xl p-6 space-y-5 max-h-[90vh] overflow-y-auto">
                 <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
-                  <h3 className="font-bold text-base text-slate-100">
-                    Configure Group {selectedGroupConfig.group_id} Hardware
+                  <h3 className="font-bold text-base text-white flex items-center gap-2">
+                    <Plus className="w-5 h-5 text-blue-400" />
+                    Provision New HVAC Control Group
+                  </h3>
+                  <button
+                    onClick={() => setIsCreateGroupOpen(false)}
+                    className="text-slate-400 hover:text-white"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <form onSubmit={handleCreateGroup} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Group ID (1..50):</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={50}
+                        value={newGroupId}
+                        onChange={(e) => setNewGroupId(parseInt(e.target.value) || 1)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Floor Assignment:</label>
+                      <select
+                        value={newFloor}
+                        onChange={(e) => setNewFloor(parseInt(e.target.value) || 1)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold"
+                      >
+                        <option value={1}>Floor 1 (Ground Floor)</option>
+                        <option value={2}>Floor 2 (Second Floor)</option>
+                        <option value={3}>Floor 3</option>
+                        <option value={4}>Floor 4</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-400 block mb-1">Group Display Name:</label>
+                    <input
+                      type="text"
+                      maxLength={20}
+                      value={newGroupName}
+                      onChange={(e) => setNewGroupName(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold"
+                      placeholder="e.g. Youth Ministry Room"
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Unit Model Type:</label>
+                      <select
+                        value={newModel}
+                        onChange={(e) => setNewModel(e.target.value as any)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-bold"
+                      >
+                        <option value="IC">IC (Indoor Fan Coil)</option>
+                        <option value="LC">LC (LOSSNAY Ventilator)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Primary M-Net Address (1..50):</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={50}
+                        value={newPrimaryIc}
+                        onChange={(e) => setNewPrimaryIc(parseInt(e.target.value) || 1)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-400 block mb-1">
+                      Secondary Slave Unit Addresses (Optional, comma-separated):
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 32, 33"
+                      value={newSlavesStr}
+                      onChange={(e) => setNewSlavesStr(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateGroupOpen(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingGroupConfig}
+                      className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-blue-900 disabled:opacity-50"
+                    >
+                      {isSavingGroupConfig ? 'Provisioning...' : 'Provision Group in Controller'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL 2: Edit Group Hardware Configuration */}
+          {selectedGroupConfig && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+              <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-lg shadow-2xl p-6 space-y-5">
+                <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
+                  <h3 className="font-bold text-base text-white">
+                    Configure Group {selectedGroupConfig.group_id} Hardware Mapping
                   </h3>
                   <button
                     onClick={() => setSelectedGroupConfig(null)}
@@ -713,21 +1022,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <div>
                       <label className="text-xs font-semibold text-slate-400 block mb-1">Unit Model:</label>
                       <select
                         value={editModel}
-                        onChange={(e) => setEditModel(e.target.value)}
+                        onChange={(e) => setEditModel(e.target.value as any)}
                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500"
                       >
-                        <option value="IC">IC (Indoor Fan Coil)</option>
-                        <option value="LC">LC (LOSSNAY Ventilator)</option>
+                        <option value="IC">IC (Indoor Unit)</option>
+                        <option value="LC">LC (LOSSNAY)</option>
                       </select>
                     </div>
 
                     <div>
-                      <label className="text-xs font-semibold text-slate-400 block mb-1">Primary M-Net Address (1..50):</label>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Primary Address:</label>
                       <input
                         type="number"
                         min={1}
@@ -737,6 +1046,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 font-mono"
                         required
                       />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Floor:</label>
+                      <select
+                        value={editFloor}
+                        onChange={(e) => setEditFloor(parseInt(e.target.value) || 1)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                      >
+                        <option value={1}>Floor 1</option>
+                        <option value={2}>Floor 2</option>
+                        <option value={3}>Floor 3</option>
+                      </select>
                     </div>
                   </div>
 
@@ -766,12 +1088,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     />
                   </div>
 
-                  {groupConfigMsg && (
-                    <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-xl text-xs font-semibold text-blue-300">
-                      {groupConfigMsg}
-                    </div>
-                  )}
-
                   <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
                     <button
                       type="button"
@@ -789,6 +1105,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </button>
                   </div>
                 </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL 3: Delete Group Confirmation Dialog */}
+          {deleteConfirmGroup && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+              <div className="bg-slate-900 border border-rose-500/40 rounded-3xl w-full max-w-md shadow-2xl p-6 space-y-4">
+                <div className="flex items-center gap-3 text-rose-400">
+                  <div className="p-3 bg-rose-500/10 rounded-2xl border border-rose-500/20">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base text-white">Delete Group {deleteConfirmGroup.group_id}?</h3>
+                    <p className="text-xs text-slate-400">"{deleteConfirmGroup.name}"</p>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed bg-slate-950 p-3.5 rounded-xl border border-slate-800">
+                  This will unassign physical M-NET address <strong className="text-white">Address {deleteConfirmGroup.address}</strong> and clear this group's name and schedules from the GB-50 controller memory.
+                </p>
+
+                <div className="flex items-center justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmGroup(null)}
+                    disabled={isDeletingGroup}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteGroup}
+                    disabled={isDeletingGroup}
+                    className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-950 disabled:opacity-50"
+                  >
+                    {isDeletingGroup ? 'Deleting...' : 'Yes, Delete Group'}
+                  </button>
+                </div>
               </div>
             </div>
           )}

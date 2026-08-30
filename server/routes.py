@@ -49,6 +49,17 @@ class UpdateSystemDataRequest(BaseModel):
     external_input: Optional[str] = Field(None, pattern="^(WITHOUT|EMERGENCY|ONOFF|ALL)$")
 
 
+class CreateGroupRequest(BaseModel):
+    """Payload to create or provision a new HVAC group."""
+    group_id: int = Field(..., ge=1, le=50)
+    name: str = Field(..., max_length=20)
+    primary_ic: int = Field(..., ge=1, le=50)
+    model: str = Field("IC", pattern="^(IC|LC)$")
+    slave_ics: Optional[List[int]] = Field(default_factory=list)
+    rcs: Optional[List[int]] = Field(default_factory=list)
+    floor: Optional[int] = Field(1, ge=1, le=10)
+
+
 class UpdateGroupConfigRequest(BaseModel):
     """Payload to configure group hardware address mapping."""
     name: str = Field(..., max_length=20)
@@ -56,6 +67,7 @@ class UpdateGroupConfigRequest(BaseModel):
     model: str = Field("IC", pattern="^(IC|LC)$")
     slave_ics: Optional[List[int]] = Field(default_factory=list)
     rcs: Optional[List[int]] = Field(default_factory=list)
+    floor: Optional[int] = Field(None, ge=1, le=10)
 
 
 class InterlockPairing(BaseModel):
@@ -226,13 +238,47 @@ async def rename_group(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+@router.post("/groups", summary="Create / Provision New HVAC Group", status_code=status.HTTP_201_CREATED)
+async def create_group(
+    request: CreateGroupRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+) -> Dict[str, Any]:
+    """Provision a new HVAC control group with assigned M-NET address and floor."""
+    try:
+        # Check if group_id already exists
+        groups = await mgr.get_all_groups()
+        if any(g.group_id == request.group_id for g in groups):
+            raise HTTPException(status_code=400, detail=f"Group ID {request.group_id} already exists.")
+        
+        await mgr.client.set_group_topology(
+            group_id=request.group_id,
+            name=request.name,
+            primary_ic=request.primary_ic,
+            model=request.model,
+            slave_ics=request.slave_ics,
+            rcs=request.rcs,
+            floor=request.floor,
+        )
+        await mgr.poll_now()
+        return {
+            "status": "success",
+            "message": f"Successfully created Group {request.group_id} ('{request.name}')",
+            "group_id": request.group_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/groups: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 @router.put("/groups/{group_id}/config", summary="Configure Group Hardware Mapping")
 async def configure_group_hardware(
     group_id: int,
     request: UpdateGroupConfigRequest,
     mgr: StateManager = Depends(get_state_mgr),
 ) -> Dict[str, Any]:
-    """Configure a group's display name, primary IC address, slave ICs, and remote controllers (RC)."""
+    """Configure a group's display name, primary IC address, slave ICs, remote controllers (RC), and floor."""
     try:
         await mgr.client.set_group_topology(
             group_id=group_id,
@@ -241,11 +287,53 @@ async def configure_group_hardware(
             model=request.model,
             slave_ics=request.slave_ics,
             rcs=request.rcs,
+            floor=request.floor,
         )
         await mgr.poll_now()
         return {"status": "success", "message": f"Group {group_id} hardware topology updated"}
     except Exception as ex:
         logger.exception("Error in PUT /api/v1/groups/%s/config: %s", group_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.delete("/groups/{group_id}", summary="Delete HVAC Group")
+async def delete_group(
+    group_id: int,
+    mgr: StateManager = Depends(get_state_mgr),
+) -> Dict[str, Any]:
+    """Delete an HVAC group from the controller and unassign all associated M-NET devices."""
+    try:
+        await mgr.client.delete_group(group_id)
+        await mgr.poll_now()
+        return {"status": "success", "message": f"Successfully deleted Group {group_id}"}
+    except Exception as ex:
+        logger.exception("Error in DELETE /api/v1/groups/%s: %s", group_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.get("/unassigned-addresses", summary="List Unassigned M-NET Addresses")
+async def get_unassigned_addresses(
+    mgr: StateManager = Depends(get_state_mgr),
+) -> Dict[str, Any]:
+    """Compute and list available M-NET addresses (1..50) that are not assigned to any group."""
+    try:
+        groups = await mgr.get_all_groups()
+        assigned = set()
+        for g in groups:
+            assigned.add(g.address)
+            for slave in g.slave_addresses:
+                assigned.add(slave)
+        
+        all_possible = set(range(1, 51))
+        unassigned = sorted(list(all_possible - assigned))
+        return {
+            "assigned_count": len(assigned),
+            "unassigned_count": len(unassigned),
+            "unassigned_addresses": unassigned,
+            "assigned_addresses": sorted(list(assigned)),
+        }
+    except Exception as ex:
+        logger.exception("Error in GET /api/v1/unassigned-addresses: %s", ex)
         raise HTTPException(status_code=500, detail=str(ex))
 
 

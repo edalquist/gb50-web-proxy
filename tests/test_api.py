@@ -128,7 +128,55 @@ async def test_rest_api_endpoints(mock_system_info, mock_group):
         assert resp.status_code == 200
         assert "2026-08-29" in resp.json()["current_time"]
 
-        # 10. Web UI Static Root Serving
+        # 10. Group CRUD & Hardware Configuration
+        app.state.client.set_group_topology = AsyncMock(return_value=True)
+        app.state.client.delete_group = AsyncMock(return_value=True)
+
+        # 10.1 Create Group
+        resp = await client.post(
+            "/api/v1/groups",
+            json={
+                "group_id": 31,
+                "name": "Youth Sanctuary",
+                "primary_ic": 31,
+                "model": "IC",
+                "slave_ics": [32],
+                "floor": 2,
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "success"
+        app.state.client.set_group_topology.assert_called()
+
+        # 10.2 Configure / Update Group
+        resp = await client.put(
+            "/api/v1/groups/1/config",
+            json={
+                "name": "FC1-1 Updated",
+                "primary_ic": 1,
+                "model": "IC",
+                "slave_ics": [],
+                "floor": 1,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "success"
+
+        # 10.3 Unassigned Addresses
+        resp = await client.get("/api/v1/unassigned-addresses")
+        assert resp.status_code == 200
+        unassigned_data = resp.json()
+        assert "unassigned_addresses" in unassigned_data
+        assert 1 not in unassigned_data["unassigned_addresses"]
+        assert 50 in unassigned_data["unassigned_addresses"]
+
+        # 10.4 Delete Group
+        resp = await client.delete("/api/v1/groups/1")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "success"
+        app.state.client.delete_group.assert_called_once_with(1)
+
+        # 11. Web UI Static Root Serving
         resp = await client.get("/")
         assert resp.status_code == 200
         assert "Example Facility HVAC Control" in resp.text

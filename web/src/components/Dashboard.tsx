@@ -29,8 +29,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [filterFloor, setFilterFloor] = useState<'all' | 'floor1' | 'floor2' | 'lossnay' | 'running' | 'dirty'>('all');
 
   // Categorize units
-  const floor1Groups = useMemo(() => groups.filter((g) => ((g as { floor?: number }).floor ?? 1) === 1), [groups]);
-  const floor2Groups = useMemo(() => groups.filter((g) => ((g as { floor?: number }).floor ?? 1) === 2), [groups]);
+  const floor1Groups = useMemo(() => groups.filter((g) => (g.floor ?? (((g as { floor?: number }).floor ?? 1) === 1 ? 1 : 2)) === 1), [groups]);
+  const floor2Groups = useMemo(() => groups.filter((g) => (g.floor ?? (((g as { floor?: number }).floor ?? 1) === 1 ? 1 : 2)) === 2), [groups]);
   const lossnayGroups = useMemo(() => groups.filter((g) => g.model === 'LC'), [groups]);
   const runningGroups = useMemo(() => groups.filter((g) => g.drive === 'ON'), [groups]);
   const dirtyFilterGroups = useMemo(() => groups.filter((g) => g.filter_dirty), [groups]);
@@ -47,8 +47,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       if (!matchesSearch) return false;
 
       // Category filter
-      if (filterFloor === 'floor1') return ((g as { floor?: number }).floor ?? 1) === 1;
-      if (filterFloor === 'floor2') return ((g as { floor?: number }).floor ?? 1) === 2;
+      const groupFloor = g.floor ?? (((g as { floor?: number }).floor ?? 1) === 1 ? 1 : 2);
+      if (filterFloor === 'floor1') return groupFloor === 1;
+      if (filterFloor === 'floor2') return groupFloor === 2;
       if (filterFloor === 'lossnay') return g.model === 'LC';
       if (filterFloor === 'running') return g.drive === 'ON';
       if (filterFloor === 'dirty') return g.filter_dirty;

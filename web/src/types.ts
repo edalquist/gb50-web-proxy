@@ -55,6 +55,7 @@ export interface GroupCapabilities {
 export interface GroupStatus {
   group_id: number;
   name: string;
+  floor?: number;
   model: ModelType;
   address: number;
   slave_addresses: number[];

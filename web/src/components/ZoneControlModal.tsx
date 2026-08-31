@@ -17,6 +17,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import { GroupStatus, DriveState, OperationMode, FanSpeed, AirDirection, GroupControlRequest } from '../types';
+import { useAuth } from '../AuthContext';
 
 interface ZoneControlModalProps {
   group: GroupStatus | null;
@@ -35,6 +36,8 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
   onRename,
   onResetFilter,
 }) => {
+  const { user } = useAuth();
+  const isViewer = user?.role === 'viewer';
   if (!group) return null;
 
   const [drive, setDrive] = useState<DriveState>(group.drive);
@@ -352,20 +355,31 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
         </div>
 
         {/* Modal Footer Actions */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold shadow-lg shadow-blue-900 transition disabled:opacity-50"
-          >
-            {isSaving ? 'Applying...' : 'Apply Changes'}
-          </button>
+        <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between gap-3">
+          {isViewer ? (
+            <span className="text-xs text-amber-400 font-medium">
+              Read-Only Viewer Mode (Controls Disabled)
+            </span>
+          ) : (
+            <div />
+          )}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onClose}
+              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-semibold transition"
+            >
+              Close
+            </button>
+            {!isViewer && (
+              <button
+                onClick={handleSave}
+                disabled={isSaving}
+                className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold shadow-lg shadow-blue-900 transition disabled:opacity-50"
+              >
+                {isSaving ? 'Applying...' : 'Apply Changes'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

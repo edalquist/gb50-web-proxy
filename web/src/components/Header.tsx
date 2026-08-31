@@ -8,9 +8,14 @@ import {
   Layers,
   Wind,
   Calendar,
-  Settings
+  Settings,
+  LogOut,
+  ShieldCheck,
+  CheckCircle2,
+  Eye
 } from 'lucide-react';
 import { SystemInfo } from '../types';
+import { useAuth } from '../AuthContext';
 
 interface HeaderProps {
   systemInfo: SystemInfo | null;
@@ -39,6 +44,10 @@ export const Header: React.FC<HeaderProps> = ({
   alarmCount,
   loadingPreset,
 }) => {
+  const { user, logout } = useAuth();
+  const isViewer = user?.role === 'viewer';
+  const isAdmin = user?.role === 'admin';
+
   return (
     <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-30 shadow-md">
       {/* Top Banner */}
@@ -65,35 +74,39 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Global Quick Action Scenes */}
         <div className="flex items-center flex-wrap gap-2">
-          <button
-            onClick={() => onApplyPreset('sunday')}
-            disabled={loadingPreset}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30 text-xs font-semibold transition disabled:opacity-50"
-            title="Turn on all AC units to 70°F and Lossnays to High for Sunday Services"
-          >
-            <Sun className="w-3.5 h-3.5 text-emerald-400" />
-            Sunday Service (70°)
-          </button>
+          {!isViewer && (
+            <>
+              <button
+                onClick={() => onApplyPreset('sunday')}
+                disabled={loadingPreset}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30 text-xs font-semibold transition disabled:opacity-50"
+                title="Turn on all AC units to 70°F and Lossnays to High for Sunday Services"
+              >
+                <Sun className="w-3.5 h-3.5 text-emerald-400" />
+                Sunday Service (70°)
+              </button>
 
-          <button
-            onClick={() => onApplyPreset('office')}
-            disabled={loadingPreset}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/40 hover:bg-blue-600/30 text-xs font-semibold transition disabled:opacity-50"
-            title="Turn on Floor 1 office units (70°F), all other zones OFF"
-          >
-            <Briefcase className="w-3.5 h-3.5 text-blue-400" />
-            Weekday Office
-          </button>
+              <button
+                onClick={() => onApplyPreset('office')}
+                disabled={loadingPreset}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/40 hover:bg-blue-600/30 text-xs font-semibold transition disabled:opacity-50"
+                title="Turn on Floor 1 office units (70°F), all other zones OFF"
+              >
+                <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                Weekday Office
+              </button>
 
-          <button
-            onClick={() => onApplyPreset('all_off')}
-            disabled={loadingPreset}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600/30 text-xs font-semibold transition disabled:opacity-50"
-            title="Turn OFF all church HVAC & ventilation units"
-          >
-            <Power className="w-3.5 h-3.5 text-rose-400" />
-            All Off
-          </button>
+              <button
+                onClick={() => onApplyPreset('all_off')}
+                disabled={loadingPreset}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600/30 text-xs font-semibold transition disabled:opacity-50"
+                title="Turn OFF all church HVAC & ventilation units"
+              >
+                <Power className="w-3.5 h-3.5 text-rose-400" />
+                All Off
+              </button>
+            </>
+          )}
 
           {/* Unit Toggle */}
           <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 text-xs font-medium ml-2">
@@ -126,6 +139,33 @@ export const Header: React.FC<HeaderProps> = ({
             <Radio className="w-3 h-3" />
             <span>{wsConnected ? 'Live' : 'Connecting'}</span>
           </div>
+
+          {/* Logged In User Profile & Sign Out */}
+          {user && (
+            <div className="flex items-center gap-2 pl-3 ml-2 border-l border-slate-800">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800 border border-slate-700 text-xs text-slate-200">
+                {isAdmin ? (
+                  <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+                ) : isViewer ? (
+                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                )}
+                <span className="font-bold text-slate-100">{user.display_name}</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-slate-900 text-slate-400 uppercase font-mono tracking-wider">
+                  {user.role}
+                </span>
+              </div>
+
+              <button
+                onClick={logout}
+                title="Sign out of church HVAC gateway"
+                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-transparent hover:border-rose-500/20 transition"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -167,27 +207,29 @@ export const Header: React.FC<HeaderProps> = ({
           Schedules
         </button>
 
-        <button
-          onClick={() => setActiveTab('admin')}
-          className={`flex items-center gap-2 py-3 px-4 text-sm font-medium border-b-2 transition ${
-            activeTab === 'admin'
-              ? 'border-blue-500 text-blue-400 bg-blue-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
-          }`}
-        >
-          <Settings className="w-4 h-4" />
-          Admin & Diagnostics
-          {dirtyFilterCount > 0 && (
-            <span className="ml-1 px-1.5 py-0.2 rounded-full text-xs bg-amber-500/20 text-amber-300 font-mono">
-              {dirtyFilterCount} Filters
-            </span>
-          )}
-          {alarmCount > 0 && (
-            <span className="ml-1 px-1.5 py-0.2 rounded-full text-xs bg-rose-500/20 text-rose-300 font-mono animate-pulse">
-              {alarmCount} Alarms
-            </span>
-          )}
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setActiveTab('admin')}
+            className={`flex items-center gap-2 py-3 px-4 text-sm font-medium border-b-2 transition ${
+              activeTab === 'admin'
+                ? 'border-blue-500 text-blue-400 bg-blue-500/5'
+                : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
+            }`}
+          >
+            <Settings className="w-4 h-4" />
+            Admin & Diagnostics
+            {dirtyFilterCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.2 rounded-full text-xs bg-amber-500/20 text-amber-300 font-mono">
+                {dirtyFilterCount} Filters
+              </span>
+            )}
+            {alarmCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.2 rounded-full text-xs bg-rose-500/20 text-rose-300 font-mono animate-pulse">
+                {alarmCount} Alarms
+              </span>
+            )}
+          </button>
+        )}
       </div>
     </header>
   );

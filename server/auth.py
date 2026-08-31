@@ -1,0 +1,382 @@
+"""Authentication, authorization, password hashing, and user repository for GB-50 Proxy."""
+
+from __future__ import annotations
+
+import os
+import time
+import json
+import base64
+import hmac
+import hashlib
+import secrets
+import sqlite3
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
+from fastapi import Request, HTTPException, Depends, status, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
+
+# Secret key for JWT signature
+JWT_SECRET = os.getenv("GB50_JWT_SECRET") or secrets.token_urlsafe(32)
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_HOURS = 24 * 7  # 7 days session
+
+# Default SQLite DB Path
+DEFAULT_DB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gb50_users.db"
+)
+DB_PATH = os.getenv("GB50_DB_PATH", DEFAULT_DB_PATH)
+
+security_bearer = HTTPBearer(auto_error=False)
+
+
+# --- Cryptographic Utilities ---
+
+def hash_password(password: str) -> str:
+    """Hash password using PBKDF2-HMAC-SHA256 with dynamic salt."""
+    salt = secrets.token_hex(16)
+    iterations = 100000
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations
+    )
+    return f"pbkdf2_sha256${iterations}${salt}${derived.hex()}"
+
+
+def verify_password(password: str, hashed_str: str) -> bool:
+    """Verify raw password against stored PBKDF2 hash."""
+    try:
+        parts = hashed_str.split("$")
+        if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+            return False
+        iterations = int(parts[1])
+        salt = parts[2]
+        expected_hash = parts[3]
+        derived = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations
+        )
+        return hmac.compare_digest(derived.hex(), expected_hash)
+    except Exception:
+        return False
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(s: str) -> bytes:
+    padding = 4 - (len(s) % 4)
+    if padding != 4:
+        s += "=" * padding
+    return base64.urlsafe_b64decode(s.encode("ascii"))
+
+
+def create_access_token(user: Dict[str, Any], expires_in_hours: int = JWT_EXPIRATION_HOURS) -> str:
+    """Create a signed JWT token."""
+    header = {"alg": "HS256", "typ": "JWT"}
+    now = int(time.time())
+    payload = {
+        "sub": str(user["id"]),
+        "username": user["username"],
+        "role": user["role"],
+        "display_name": user.get("display_name", user["username"]),
+        "iat": now,
+        "exp": now + (expires_in_hours * 3600),
+    }
+
+    header_b64 = _b64url_encode(json.dumps(header).encode("utf-8"))
+    payload_b64 = _b64url_encode(json.dumps(payload).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}"
+
+    signature = hmac.new(
+        JWT_SECRET.encode("utf-8"), signing_input.encode("utf-8"), hashlib.sha256
+    ).digest()
+    sig_b64 = _b64url_encode(signature)
+
+    return f"{header_b64}.{payload_b64}.{sig_b64}"
+
+
+def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
+    """Decode and verify signed JWT token."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        header_b64, payload_b64, sig_b64 = parts
+        signing_input = f"{header_b64}.{payload_b64}"
+
+        expected_sig = hmac.new(
+            JWT_SECRET.encode("utf-8"), signing_input.encode("utf-8"), hashlib.sha256
+        ).digest()
+        provided_sig = _b64url_decode(sig_b64)
+
+        if not hmac.compare_digest(expected_sig, provided_sig):
+            return None
+
+        payload_bytes = _b64url_decode(payload_b64)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+
+        if payload.get("exp", 0) < int(time.time()):
+            return None  # Expired
+
+        return payload
+    except Exception:
+        return None
+
+
+# --- Database Repository ---
+
+class UserDatabase:
+    """SQLite User Repository."""
+
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self._init_db()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        """Create tables and seed initial admin user if empty."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'viewer')),
+                    display_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_login TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+            conn.commit()
+
+            # Seed default admin if no users exist
+            cursor.execute("SELECT COUNT(*) FROM users")
+            count = cursor.fetchone()[0]
+            if count == 0:
+                default_password = os.getenv("GB50_ADMIN_PASSWORD") or secrets.token_urlsafe(16)
+                now_str = datetime.now(timezone.utc).isoformat()
+                cursor.execute(
+                    """
+                    INSERT INTO users (username, password_hash, role, display_name, created_at, enabled)
+                    VALUES (?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        "admin",
+                        hash_password(default_password),
+                        "admin",
+                        "Facility Administrator",
+                        now_str,
+                    ),
+                )
+                # Also seed an initial operator account for convenience
+                cursor.execute(
+                    """
+                    INSERT INTO users (username, password_hash, role, display_name, created_at, enabled)
+                    VALUES (?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        "staff",
+                        hash_password(secrets.token_urlsafe(16)),
+                        "operator",
+                        "Parish Office Staff",
+                        now_str,
+                    ),
+                )
+                conn.commit()
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def list_users(self) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, username, role, display_name, created_at, last_login, enabled FROM users ORDER BY id ASC")
+            return [dict(row) for row in cursor.fetchall()]
+
+    def create_user(self, username: str, password: str, role: str, display_name: str) -> Dict[str, Any]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now_str = datetime.now(timezone.utc).isoformat()
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash, role, display_name, created_at, enabled)
+                VALUES (?, ?, ?, ?, ?, 1)
+                """,
+                (username.strip(), hash_password(password), role, display_name.strip(), now_str),
+            )
+            conn.commit()
+            user_id = cursor.lastrowid
+            return self.get_user_by_id(user_id)
+
+    def update_user(
+        self,
+        user_id: int,
+        role: Optional[str] = None,
+        display_name: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        new_password: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            updates = []
+            params = []
+            if role is not None:
+                updates.append("role = ?")
+                params.append(role)
+            if display_name is not None:
+                updates.append("display_name = ?")
+                params.append(display_name.strip())
+            if enabled is not None:
+                updates.append("enabled = ?")
+                params.append(1 if enabled else 0)
+            if new_password is not None and new_password.strip():
+                updates.append("password_hash = ?")
+                params.append(hash_password(new_password.strip()))
+
+            if not updates:
+                return self.get_user_by_id(user_id)
+
+            params.append(user_id)
+            cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+            conn.commit()
+            return self.get_user_by_id(user_id)
+
+    def update_last_login(self, user_id: int):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            now_str = datetime.now(timezone.utc).isoformat()
+            cursor.execute("UPDATE users SET last_login = ? WHERE id = ?", (now_str, user_id))
+            conn.commit()
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+
+# Singleton User DB instance
+user_db = UserDatabase()
+
+
+# --- Pydantic Models for Auth ---
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = Field(..., pattern="^(admin|operator|viewer)$")
+    display_name: str
+
+
+class UpdateUserRequest(BaseModel):
+    role: Optional[str] = Field(None, pattern="^(admin|operator|viewer)$")
+    display_name: Optional[str] = None
+    enabled: Optional[bool] = None
+    new_password: Optional[str] = None
+
+
+class UserProfileResponse(BaseModel):
+    id: int
+    username: str
+    role: str
+    display_name: str
+    created_at: Optional[str] = None
+    last_login: Optional[str] = None
+    enabled: bool = True
+
+
+# --- FastAPI Auth Dependencies ---
+
+ROLE_HIERARCHY = {
+    "viewer": 1,
+    "operator": 2,
+    "admin": 3,
+}
+
+
+async def get_current_user(
+    request: Request,
+    bearer: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
+) -> Dict[str, Any]:
+    """Extract and validate authenticated user from Bearer header or Cookie."""
+    token = None
+    if bearer and bearer.credentials:
+        token = bearer.credentials
+    elif "gb50_token" in request.cookies:
+        token = request.cookies["gb50_token"]
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Please log in.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session token invalid or expired. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id = int(payload["sub"])
+    user = user_db.get_user_by_id(user_id)
+    if not user or not user.get("enabled", 1):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated or no longer exists.",
+        )
+
+    return user
+
+
+def require_role(min_role: str):
+    """Dependency that enforces a minimum user role ('viewer' <= 'operator' <= 'admin')."""
+    min_level = ROLE_HIERARCHY.get(min_role, 1)
+
+    async def _role_checker(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+        user_role = user.get("role", "viewer")
+        user_level = ROLE_HIERARCHY.get(user_role, 1)
+        if user_level < min_level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Requires '{min_role}' role (current role: '{user_role}').",
+            )
+        return user
+
+    return _role_checker

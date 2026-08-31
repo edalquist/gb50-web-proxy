@@ -38,6 +38,13 @@ web/.npm/
 web/dist/
 web/*.png
 
+# Databases & Local State
+*.db
+*.sqlite*
+
+# Testing & Scratch Scripts
+web/test_*.mjs
+
 # IDE & OS
 .vscode/
 .idea/

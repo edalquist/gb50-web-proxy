@@ -10,12 +10,14 @@ export interface RouteState {
   adminSubTab?: AdminSubTab;
   scheduleSubTab?: ScheduleSubTab;
   groupId?: number;
+  dashboardFilter?: string;
   params: URLSearchParams;
 }
 
 export function parseLocation(): RouteState {
   const path = window.location.pathname.toLowerCase().replace(/\/+$/, '') || '/';
   const params = new URLSearchParams(window.location.search);
+  const dashboardFilter = params.get('floor') || undefined;
   
   // 1. Check Zone Direct Modal link: /zone/:id or /dashboard/zone/:id
   const zoneMatch = path.match(/^\/(?:dashboard\/)?zone\/(\d+)/);
@@ -24,6 +26,7 @@ export function parseLocation(): RouteState {
       path,
       tab: 'dashboard',
       groupId: parseInt(zoneMatch[1], 10),
+      dashboardFilter,
       params,
     };
   }
@@ -69,6 +72,7 @@ export function parseLocation(): RouteState {
   return {
     path: '/',
     tab: 'dashboard',
+    dashboardFilter,
     params,
   };
 }

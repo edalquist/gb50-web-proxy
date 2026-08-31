@@ -11,14 +11,18 @@ import {
 } from './api';
 import { GroupStatus, SystemInfo, GroupControlRequest } from './types';
 import { useAppRouter, MainTab } from './router';
+import { useAuth } from './AuthContext';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { VentilationView } from './components/VentilationView';
 import { ScheduleView } from './components/ScheduleView';
 import { AdminPanel } from './components/AdminPanel';
 import { ZoneControlModal } from './components/ZoneControlModal';
+import { LoginView } from './components/LoginView';
+import { Loader2 } from 'lucide-react';
 
 export const App: React.FC = () => {
+  const { user, isAuthenticated, isLoading } = useAuth();
   const { route, goTo } = useAppRouter();
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [groups, setGroups] = useState<GroupStatus[]>([]);
@@ -29,6 +33,7 @@ export const App: React.FC = () => {
 
   // Initial Load
   const loadData = useCallback(async () => {
+    if (!isAuthenticated) return;
     try {
       const [sys, grps] = await Promise.all([fetchSystemInfo(), fetchGroups()]);
       setSystemInfo(sys);
@@ -36,29 +41,31 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to load initial controller data:', err);
     }
-  }, []);
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    loadData();
+    if (isAuthenticated) {
+      loadData();
 
-    // Subscribe to live WebSocket updates
-    const unsubscribe = subscribeToWebSocket(
-      (updatedGroups) => {
-        setGroups((prev) => {
-          const map = new Map(prev.map((g) => [g.group_id, g]));
-          for (const ug of updatedGroups) {
-            map.set(ug.group_id, ug);
-          }
-          return Array.from(map.values()).sort((a, b) => a.group_id - b.group_id);
-        });
-      },
-      (connected) => {
-        setWsConnected(connected);
-      }
-    );
+      // Subscribe to live WebSocket updates
+      const unsubscribe = subscribeToWebSocket(
+        (updatedGroups) => {
+          setGroups((prev) => {
+            const map = new Map(prev.map((g) => [g.group_id, g]));
+            for (const ug of updatedGroups) {
+              map.set(ug.group_id, ug);
+            }
+            return Array.from(map.values()).sort((a, b) => a.group_id - b.group_id);
+          });
+        },
+        (connected) => {
+          setWsConnected(connected);
+        }
+      );
 
-    return () => unsubscribe();
-  }, [loadData]);
+      return () => unsubscribe();
+    }
+  }, [isAuthenticated, loadData]);
 
   // Deep Link / URL support for direct modal: /zone/:id or /dashboard/zone/:id
   useEffect(() => {
@@ -80,6 +87,28 @@ export const App: React.FC = () => {
     }
   }, [groups]);
 
+  // Guard: if non-admin tries to navigate to /admin, redirect to /dashboard
+  useEffect(() => {
+    if (isAuthenticated && route.tab === 'admin' && user?.role !== 'admin') {
+      goTo('/dashboard');
+    }
+  }, [isAuthenticated, route.tab, user?.role, goTo]);
+
+  // Loading Screen
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 gap-3">
+        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+        <span className="text-xs font-semibold tracking-wider uppercase">Loading Example Facility HVAC Gateway...</span>
+      </div>
+    );
+  }
+
+  // If not authenticated, render Login Screen
+  if (!isAuthenticated) {
+    return <LoginView onSuccess={loadData} />;
+  }
+
   // Navigation tab change
   const handleTabChange = (tab: MainTab) => {
     if (tab === 'dashboard') {
@@ -89,7 +118,9 @@ export const App: React.FC = () => {
     } else if (tab === 'schedules') {
       goTo('/schedules/' + (route.scheduleSubTab || 'programs'));
     } else if (tab === 'admin') {
-      goTo('/admin/' + (route.adminSubTab || 'system'));
+      if (user?.role === 'admin') {
+        goTo('/admin/' + (route.adminSubTab || 'system'));
+      }
     }
   };
 
@@ -103,16 +134,18 @@ export const App: React.FC = () => {
     await controlGroup(groupId, request);
   };
 
+  const handleRenameGroup = async (groupId: number, newName: string) => {
+    await renameGroup(groupId, newName);
+  };
+
   const handleBatchControl = async (updates: Record<number, GroupControlRequest>) => {
     await batchControl(updates);
   };
 
   const handleApplyPreset = async (preset: 'sunday' | 'all_off' | 'office' | 'night') => {
-    setLoadingPreset(true);
     try {
+      setLoadingPreset(true);
       await applyPreset(preset);
-    } catch (err) {
-      console.error('Failed to apply preset:', err);
     } finally {
       setLoadingPreset(false);
     }
@@ -122,11 +155,6 @@ export const App: React.FC = () => {
     await resetFilter(groupId);
   };
 
-  const handleRenameGroup = async (groupId: number, newName: string) => {
-    await renameGroup(groupId, newName);
-    await loadData();
-  };
-
   const handleOpenZoneModal = (group: GroupStatus) => {
     setSelectedGroup(group);
     goTo(`/zone/${group.group_id}`);
@@ -134,17 +162,19 @@ export const App: React.FC = () => {
 
   const handleCloseZoneModal = () => {
     setSelectedGroup(null);
-    if (window.location.pathname.includes('/zone/')) {
+    if (route.path.startsWith('/zone')) {
       goTo('/dashboard');
     }
   };
 
+  // Counters
   const runningCount = groups.filter((g) => g.drive === 'ON').length;
   const dirtyFilterCount = groups.filter((g) => g.filter_dirty).length;
+  const alarmCount = groups.filter((g) => g.error_active).length;
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
-      {/* Header */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-500 selection:text-white">
+      {/* Header Bar */}
       <Header
         systemInfo={systemInfo}
         wsConnected={wsConnected}
@@ -155,12 +185,12 @@ export const App: React.FC = () => {
         onApplyPreset={handleApplyPreset}
         runningCount={runningCount}
         dirtyFilterCount={dirtyFilterCount}
-        alarmCount={0}
+        alarmCount={alarmCount}
         loadingPreset={loadingPreset}
       />
 
       {/* Main View Area */}
-      <main className="flex-1">
+      <main className="flex-1 pb-16">
         {route.tab === 'dashboard' && (
           <Dashboard
             groups={groups}
@@ -169,11 +199,8 @@ export const App: React.FC = () => {
             onOpenDetails={handleOpenZoneModal}
             onResetFilter={handleResetFilter}
             onBatchControl={handleBatchControl}
-            initialFilter={route.params.get('floor') || route.params.get('filter') || undefined}
-            onFilterChange={(flr) => {
-              const url = flr === 'all' ? '/dashboard' : `/dashboard?floor=${flr}`;
-              goTo(url, true);
-            }}
+            initialFilter={route.dashboardFilter}
+            onFilterChange={(f) => goTo(f === 'all' ? '/dashboard' : `/dashboard?floor=${f}`)}
           />
         )}
 
@@ -194,7 +221,7 @@ export const App: React.FC = () => {
           />
         )}
 
-        {route.tab === 'admin' && (
+        {route.tab === 'admin' && user?.role === 'admin' && (
           <AdminPanel
             systemInfo={systemInfo}
             groups={groups}
@@ -228,4 +255,5 @@ export const App: React.FC = () => {
     </div>
   );
 };
+
 export default App;

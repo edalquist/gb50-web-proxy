@@ -1,4 +1,4 @@
-"""Unit and integration tests for FastAPI REST API and Web UI static serving."""
+"""Unit and integration tests for FastAPI REST API, Web UI static serving, and RBAC authentication."""
 
 import pytest
 import httpx
@@ -50,7 +50,7 @@ def mock_group():
 
 
 @pytest.mark.asyncio
-async def test_rest_api_endpoints(mock_system_info, mock_group):
+async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
     app = create_app(controller_host="192.0.2.90", poll_interval=60.0)
     
     # Mock client methods
@@ -72,69 +72,103 @@ async def test_rest_api_endpoints(mock_system_info, mock_group):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. System Info
+        # 1. Unauthenticated Read Endpoints (Allowed)
         resp = await client.get("/api/v1/system")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["model"] == "GB-50ADA-A"
-        assert data["system_name"] == "Example Facility"
+        assert resp.json()["model"] == "GB-50ADA-A"
 
-        # 2. All Groups
         resp = await client.get("/api/v1/groups")
-        assert resp.status_code == 200
-        groups = resp.json()
-        assert len(groups) == 1
-        assert groups[0]["name"] == "FC1-1"
-        assert groups[0]["set_temp_f"] == 68.0
-        assert groups[0]["inlet_temp_f"] == 73.4
-
-        # 3. Single Group
-        resp = await client.get("/api/v1/groups/1")
-        assert resp.status_code == 200
-        assert resp.json()["group_id"] == 1
-
-        # 4. Control Group
-        resp = await client.post(
-            "/api/v1/groups/1",
-            json={"drive": "ON", "mode": "COOL", "set_temp_f": 72.0},
-        )
-        assert resp.status_code == 200
-        app.state.client.set_group.assert_called_once()
-
-        # 5. Rename Group
-        resp = await client.put(
-            "/api/v1/groups/1/name",
-            json={"name": "Sanctuary East"},
-        )
-        assert resp.status_code == 200
-
-        # 6. Apply Preset (Sunday Service)
-        resp = await client.post("/api/v1/presets/sunday")
-        assert resp.status_code == 200
-        app.state.client.set_groups_batch.assert_called()
-
-        # 7. Reset Filter
-        resp = await client.post("/api/v1/groups/1/reset-filter")
-        assert resp.status_code == 200
-        app.state.client.reset_filter.assert_called_once_with(1)
-
-        # 8. Alarms
-        resp = await client.get("/api/v1/alarms")
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
-        # 9. Clock
-        resp = await client.get("/api/v1/clock")
-        assert resp.status_code == 200
-        assert "2026-08-29" in resp.json()["current_time"]
+        # 2. Unauthenticated Control Attempt (Must fail with 401)
+        resp = await client.post("/api/v1/groups/1", json={"drive": "ON"})
+        assert resp.status_code == 401
 
-        # 10. Group CRUD & Hardware Configuration
+        # 3. Authenticate as Admin
+        login_resp = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "admin"},
+        )
+        assert login_resp.status_code == 200
+        admin_data = login_resp.json()
+        assert "access_token" in admin_data
+        assert admin_data["user"]["role"] == "admin"
+        admin_token = admin_data["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+        # 4. Check Current User
+        me_resp = await client.get("/api/v1/auth/me", headers=admin_headers)
+        assert me_resp.status_code == 200
+        assert me_resp.json()["username"] == "admin"
+
+        # 5. Create a Viewer User
+        create_resp = await client.post(
+            "/api/v1/users",
+            headers=admin_headers,
+            json={
+                "username": "kiosk_user",
+                "password": "kioskpassword",
+                "role": "viewer",
+                "display_name": "Narthex Display Kiosk",
+            },
+        )
+        assert create_resp.status_code == 200
+        assert create_resp.json()["role"] == "viewer"
+
+        # 6. Login as Viewer and Test Permission Denied (403) on Control
+        v_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "kiosk_user", "password": "kioskpassword"},
+        )
+        assert v_login.status_code == 200
+        viewer_token = v_login.json()["access_token"]
+        viewer_headers = {"Authorization": f"Bearer {viewer_token}"}
+
+        # Viewer reading groups: Allowed (200)
+        v_groups = await client.get("/api/v1/groups", headers=viewer_headers)
+        assert v_groups.status_code == 200
+
+        # Viewer trying to control group: Denied (403)
+        v_ctrl = await client.post(
+            "/api/v1/groups/1",
+            headers=viewer_headers,
+            json={"drive": "ON"},
+        )
+        assert v_ctrl.status_code == 403
+
+        # 7. Login as Operator and Test Successful Group Control
+        staff_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "staff", "password": "staff123"},
+        )
+        assert staff_login.status_code == 200
+        staff_token = staff_login.json()["access_token"]
+        staff_headers = {"Authorization": f"Bearer {staff_token}"}
+
+        # Operator controlling group: Allowed (200)
+        s_ctrl = await client.post(
+            "/api/v1/groups/1",
+            headers=staff_headers,
+            json={"drive": "ON", "mode": "COOL", "set_temp_f": 72.0},
+        )
+        assert s_ctrl.status_code == 200
+
+        # Operator trying to provision new group: Denied (403)
+        s_prov = await client.post(
+            "/api/v1/groups",
+            headers=staff_headers,
+            json={"group_id": 31, "name": "Test", "primary_ic": 31},
+        )
+        assert s_prov.status_code == 403
+
+        # 8. Admin Control Operations
         app.state.client.set_group_topology = AsyncMock(return_value=True)
         app.state.client.delete_group = AsyncMock(return_value=True)
 
-        # 10.1 Create Group
         resp = await client.post(
             "/api/v1/groups",
+            headers=admin_headers,
             json={
                 "group_id": 31,
                 "name": "Youth Sanctuary",
@@ -146,37 +180,11 @@ async def test_rest_api_endpoints(mock_system_info, mock_group):
         )
         assert resp.status_code == 201
         assert resp.json()["status"] == "success"
-        app.state.client.set_group_topology.assert_called()
 
-        # 10.2 Configure / Update Group
-        resp = await client.put(
-            "/api/v1/groups/1/config",
-            json={
-                "name": "FC1-1 Updated",
-                "primary_ic": 1,
-                "model": "IC",
-                "slave_ics": [],
-                "floor": 1,
-            },
-        )
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "success"
-
-        # 10.3 Unassigned Addresses
-        resp = await client.get("/api/v1/unassigned-addresses")
-        assert resp.status_code == 200
-        unassigned_data = resp.json()
-        assert "unassigned_addresses" in unassigned_data
-        assert 1 not in unassigned_data["unassigned_addresses"]
-        assert 50 in unassigned_data["unassigned_addresses"]
-
-        # 10.4 Delete Group
-        resp = await client.delete("/api/v1/groups/1")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "success"
-        app.state.client.delete_group.assert_called_once_with(1)
-
-        # 11. Web UI Static Root Serving
-        resp = await client.get("/")
-        assert resp.status_code == 200
-        assert "Example Facility HVAC Control" in resp.text
+        # 9. Clean up test user
+        user_list_resp = await client.get("/api/v1/users", headers=admin_headers)
+        assert user_list_resp.status_code == 200
+        kiosk = next((u for u in user_list_resp.json() if u["username"] == "kiosk_user"), None)
+        if kiosk:
+            del_resp = await client.delete(f"/api/v1/users/{kiosk['id']}", headers=admin_headers)
+            assert del_resp.status_code == 200

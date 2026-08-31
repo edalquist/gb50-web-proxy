@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { GroupStatus, GroupControlRequest } from '../types';
 import { ZoneCard } from './ZoneCard';
+import { useAuth } from '../AuthContext';
 
 interface DashboardProps {
   groups: GroupStatus[];
@@ -29,6 +30,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   initialFilter,
   onFilterChange,
 }) => {
+  const { user } = useAuth();
+  const isViewer = user?.role === 'viewer';
   const [searchQuery, setSearchQuery] = useState('');
   const [filterFloor, setFilterFloor] = useState<'all' | 'floor1' | 'floor2' | 'lossnay' | 'running' | 'dirty'>(
     (initialFilter as any) || 'all'
@@ -100,20 +103,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
               14 AC Units • <strong className="text-emerald-400">{floor1Groups.filter((g) => g.drive === 'ON').length} Active</strong>
             </p>
           </div>
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => handleFloorBatch('floor1', 'ON')}
-              className="px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition"
-            >
-              All ON
-            </button>
-            <button
-              onClick={() => handleFloorBatch('floor1', 'OFF')}
-              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg text-xs font-semibold transition"
-            >
-              All OFF
-            </button>
-          </div>
+          {!isViewer && (
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => handleFloorBatch('floor1', 'ON')}
+                className="px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition"
+              >
+                All ON
+              </button>
+              <button
+                onClick={() => handleFloorBatch('floor1', 'OFF')}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg text-xs font-semibold transition"
+              >
+                All OFF
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Floor 2 Card */}
@@ -127,20 +132,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
               12 AC Units • <strong className="text-emerald-400">{floor2Groups.filter((g) => g.drive === 'ON').length} Active</strong>
             </p>
           </div>
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => handleFloorBatch('floor2', 'ON')}
-              className="px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition"
-            >
-              All ON
-            </button>
-            <button
-              onClick={() => handleFloorBatch('floor2', 'OFF')}
-              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg text-xs font-semibold transition"
-            >
-              All OFF
-            </button>
-          </div>
+          {!isViewer && (
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => handleFloorBatch('floor2', 'ON')}
+                className="px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition"
+              >
+                All ON
+              </button>
+              <button
+                onClick={() => handleFloorBatch('floor2', 'OFF')}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg text-xs font-semibold transition"
+              >
+                All OFF
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Ventilation Summary Card */}

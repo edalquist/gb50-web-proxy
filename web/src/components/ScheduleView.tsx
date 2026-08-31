@@ -11,7 +11,8 @@ import {
   RefreshCw,
   Zap,
   Edit2,
-  X
+  X,
+  Info
 } from 'lucide-react';
 import { 
   GroupStatus, 
@@ -25,6 +26,7 @@ import {
   fetchWeeklySchedule, 
   updateWeeklySchedule
 } from '../api';
+import { useAuth } from '../AuthContext';
 
 interface ScheduleViewProps {
   groups: GroupStatus[];
@@ -118,6 +120,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   activeMode,
   onModeChange,
 }) => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [scheduleMode, setScheduleMode] = useState<ScheduleMode>(activeMode || 'programs');
 
   useEffect(() => {
@@ -519,6 +523,13 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         <div className="p-3.5 bg-blue-500/10 border border-blue-500/30 rounded-2xl text-xs font-semibold text-blue-300 flex items-center gap-2 shadow">
           <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0" />
           <span>{statusMsg}</span>
+        </div>
+      )}
+
+      {!isAdmin && (
+        <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-xs font-semibold text-amber-300 flex items-center gap-2 shadow">
+          <Info className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>Viewing active schedules in Read-Only mode. Saving schedules or creating activity programs requires Administrator role.</span>
         </div>
       )}
 

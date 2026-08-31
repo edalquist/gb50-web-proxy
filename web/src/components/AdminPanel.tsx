@@ -16,16 +16,29 @@ import {
   Wrench,
   Info,
   Activity,
-  Filter
+  Filter,
+  UserPlus,
+  Edit2,
+  X,
+  Eye
 } from 'lucide-react';
-import { GroupStatus, SystemInfo, AlarmRecord, GroupConfigPayload } from '../types';
+import { 
+  GroupStatus, 
+  SystemInfo, 
+  AlarmRecord, 
+  GroupConfigPayload,
+  UserProfile,
+  UserRole
+} from '../types';
 import { 
   fetchAlarms, 
-  clearAlarmHistory,
+  clearAlarms,
   fetchClock, 
   syncClock, 
-  fetchUsers, 
-  changeUserPassword, 
+  fetchProxyUsers,
+  createProxyUser,
+  updateProxyUser,
+  deleteProxyUser,
   createGroup,
   updateGroupConfig,
   deleteGroup,
@@ -465,31 +478,108 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // --- Subtab 7: User Security State ---
-  const [users, setUsers] = useState<Array<{ user: string; password?: string; category: string }>>([]);
-  const [selectedUser, setSelectedUser] = useState<string>('administrator');
-  const [newPassword, setNewPassword] = useState<string>('');
-  const [passwordMsg, setPasswordMsg] = useState<string | null>(null);
+  // --- Subtab 7: User Security & RBAC State ---
+  const [proxyUsers, setProxyUsers] = useState<UserProfile[]>([]);
+  const [isCreateUserModalOpen, setIsCreateUserModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+  const [deleteConfirmUser, setDeleteConfirmUser] = useState<UserProfile | null>(null);
+  const [userActionMsg, setUserActionMsg] = useState<string | null>(null);
+  const [isSavingUser, setIsSavingUser] = useState(false);
+
+  const [newUserForm, setNewUserForm] = useState({
+    username: '',
+    password: '',
+    role: 'operator' as UserRole,
+    display_name: '',
+  });
+
+  const [editUserForm, setEditUserForm] = useState({
+    role: 'operator' as UserRole,
+    display_name: '',
+    new_password: '',
+    enabled: true,
+  });
 
   const loadUsers = async () => {
     try {
-      const data = await fetchUsers();
-      setUsers(data);
+      const data = await fetchProxyUsers();
+      setProxyUsers(data);
     } catch (err) {
-      console.error(err);
+      console.error('Failed to load proxy users:', err);
     }
   };
 
-  const handleChangePassword = async (e: React.FormEvent) => {
+  const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPassword) return;
+    if (!newUserForm.username.trim() || !newUserForm.password.trim() || !newUserForm.display_name.trim()) {
+      setUserActionMsg('Please fill in all user fields.');
+      return;
+    }
+    setIsSavingUser(true);
+    setUserActionMsg(null);
     try {
-      const res = await changeUserPassword(selectedUser, newPassword);
-      setPasswordMsg(res.message);
-      setNewPassword('');
-      loadUsers();
+      await createProxyUser({
+        username: newUserForm.username.trim(),
+        password: newUserForm.password.trim(),
+        role: newUserForm.role,
+        display_name: newUserForm.display_name.trim(),
+      });
+      setUserActionMsg(`User '${newUserForm.username}' created successfully!`);
+      setIsCreateUserModalOpen(false);
+      setNewUserForm({ username: '', password: '', role: 'operator', display_name: '' });
+      await loadUsers();
     } catch (err: any) {
-      setPasswordMsg(`Failed: ${err.message}`);
+      setUserActionMsg(`Error creating user: ${err.message}`);
+    } finally {
+      setIsSavingUser(false);
+    }
+  };
+
+  const handleStartEditUser = (u: UserProfile) => {
+    setEditingUser(u);
+    setEditUserForm({
+      role: u.role,
+      display_name: u.display_name,
+      new_password: '',
+      enabled: u.enabled !== false,
+    });
+  };
+
+  const handleSaveEditUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+    setIsSavingUser(true);
+    setUserActionMsg(null);
+    try {
+      await updateProxyUser(editingUser.id, {
+        role: editUserForm.role,
+        display_name: editUserForm.display_name.trim(),
+        enabled: editUserForm.enabled,
+        new_password: editUserForm.new_password.trim() ? editUserForm.new_password.trim() : undefined,
+      });
+      setUserActionMsg(`User '${editingUser.username}' updated successfully!`);
+      setEditingUser(null);
+      await loadUsers();
+    } catch (err: any) {
+      setUserActionMsg(`Error updating user: ${err.message}`);
+    } finally {
+      setIsSavingUser(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!deleteConfirmUser) return;
+    setIsSavingUser(true);
+    setUserActionMsg(null);
+    try {
+      await deleteProxyUser(deleteConfirmUser.id);
+      setUserActionMsg(`User '${deleteConfirmUser.username}' deleted.`);
+      setDeleteConfirmUser(null);
+      await loadUsers();
+    } catch (err: any) {
+      setUserActionMsg(`Error deleting user: ${err.message}`);
+    } finally {
+      setIsSavingUser(false);
     }
   };
 
@@ -513,7 +603,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setIsClearingAlarms(true);
     setAlarmMsg(null);
     try {
-      const res = await clearAlarmHistory(2);
+      const res = await clearAlarms();
       setAlarmMsg(res.message);
       await loadAlarms();
     } catch (err: any) {
@@ -1693,82 +1783,327 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
-      {/* Subtab 7: User Security & Passwords (100% UserSettingsPanel coverage) */}
+      {/* Subtab 7: User Security & Role-Based Access Controls (RBAC) */}
       {subTab === 'security' && (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-          <div className="border-b border-slate-800 pb-4">
-            <h3 className="font-bold text-base text-slate-100 flex items-center gap-2">
-              <Key className="w-5 h-5 text-blue-400" />
-              Controller User Accounts & Access Permissions
-            </h3>
-            <p className="text-xs text-slate-400 mt-1">
-              Manage accounts and passwords for Administrator, Maintenance, and Public users.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Account List */}
-            <div className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800 space-y-3">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">
-                Discovered Controller Accounts
-              </span>
-              {users.map((u) => (
-                <div
-                  key={u.user}
-                  onClick={() => setSelectedUser(u.user)}
-                  className={`p-3.5 rounded-xl border cursor-pointer flex items-center justify-between transition ${
-                    selectedUser === u.user
-                      ? 'bg-blue-600/20 border-blue-500 text-white'
-                      : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
-                  }`}
-                >
-                  <div>
-                    <span className="font-bold text-sm block font-mono">{u.user}</span>
-                    <span className="text-xs text-slate-400">{u.category}</span>
-                  </div>
-                  {u.password && (
-                    <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
-                      Password: {u.password}
-                    </span>
-                  )}
-                </div>
-              ))}
+          <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="font-bold text-base text-slate-100 flex items-center gap-2">
+                <Key className="w-5 h-5 text-blue-400" />
+                Proxy Gateway User Accounts & Role Permissions
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Manage church staff access accounts, passwords, and assigned roles (Administrator, Parish Operator, Viewer).
+              </p>
             </div>
 
-            {/* Password Update Form */}
-            <form onSubmit={handleChangePassword} className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800 space-y-4">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
-                Update Password for <strong className="text-blue-400">{selectedUser}</strong>
-              </span>
-
-              <div>
-                <label className="text-xs text-slate-400 block mb-1">New Alphanumeric Password (3-10 chars):</label>
-                <input
-                  type="text"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  maxLength={10}
-                  minLength={3}
-                  placeholder="Enter new password..."
-                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
-                  required
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-blue-900"
-              >
-                Save New Password to Controller
-              </button>
-
-              {passwordMsg && (
-                <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-xl text-xs font-semibold text-blue-300">
-                  {passwordMsg}
-                </div>
-              )}
-            </form>
+            <button
+              onClick={() => setIsCreateUserModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition shadow-lg shadow-blue-900/30"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Create New User</span>
+            </button>
           </div>
+
+          {userActionMsg && (
+            <div className="p-3.5 bg-blue-500/10 border border-blue-500/30 rounded-xl text-xs font-semibold text-blue-300 flex items-center justify-between">
+              <span>{userActionMsg}</span>
+              <button onClick={() => setUserActionMsg(null)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* User Accounts Table */}
+          <div className="bg-slate-950/80 rounded-2xl border border-slate-800 overflow-hidden shadow-sm">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-900/90 text-slate-400 font-bold border-b border-slate-800 uppercase tracking-wider">
+                <tr>
+                  <th className="py-3 px-4">User</th>
+                  <th className="py-3 px-4">Role</th>
+                  <th className="py-3 px-4">Permissions</th>
+                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 font-medium">
+                {proxyUsers.map((u) => {
+                  const isAdminUser = u.role === 'admin';
+                  const isOperatorUser = u.role === 'operator';
+                  const isViewerUser = u.role === 'viewer';
+
+                  return (
+                    <tr key={u.id} className="hover:bg-slate-900/50 transition">
+                      <td className="py-3.5 px-4">
+                        <span className="font-bold text-slate-100 block text-sm">{u.display_name}</span>
+                        <span className="text-[11px] text-slate-400 font-mono">@{u.username}</span>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                            isAdminUser
+                              ? 'bg-blue-600/20 text-blue-300 border-blue-500/30'
+                              : isOperatorUser
+                              ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/30'
+                              : 'bg-amber-600/20 text-amber-300 border-amber-500/30'
+                          }`}
+                        >
+                          {isAdminUser ? (
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                          ) : isOperatorUser ? (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                          <span className="capitalize">{u.role}</span>
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-400 text-xs">
+                        {isAdminUser && <span>Full Control, Schedules & Admin</span>}
+                        {isOperatorUser && <span>Daily Operations, Setpoints & Presets</span>}
+                        {isViewerUser && <span>Read-Only Monitoring</span>}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                            u.enabled !== false
+                              ? 'bg-emerald-500/10 text-emerald-400'
+                              : 'bg-rose-500/10 text-rose-400'
+                          }`}
+                        >
+                          {u.enabled !== false ? 'ACTIVE' : 'DEACTIVATED'}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleStartEditUser(u)}
+                            className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition"
+                            title="Edit User or Reset Password"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirmUser(u)}
+                            className="p-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 rounded-lg transition"
+                            title="Delete User"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Modal 1: Create New User */}
+          {isCreateUserModalOpen && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <h4 className="font-bold text-slate-100 flex items-center gap-2">
+                    <UserPlus className="w-4 h-4 text-blue-400" />
+                    Create New Gateway User
+                  </h4>
+                  <button onClick={() => setIsCreateUserModalOpen(false)} className="text-slate-400 hover:text-white">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleCreateUser} className="space-y-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1">Username:</label>
+                    <input
+                      type="text"
+                      value={newUserForm.username}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, username: e.target.value })}
+                      placeholder="e.g. pastor_john, facilities_tom"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1">Display Name:</label>
+                    <input
+                      type="text"
+                      value={newUserForm.display_name}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, display_name: e.target.value })}
+                      placeholder="e.g. John Doe (Pastor)"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1">Assigned Role:</label>
+                    <select
+                      value={newUserForm.role}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value as UserRole })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    >
+                      <option value="operator">Parish Operator (Daily Controls & Presets)</option>
+                      <option value="viewer">Viewer (Read-Only Status / Kiosk)</option>
+                      <option value="admin">Administrator (Full Access & Schedules)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1">Initial Password:</label>
+                    <input
+                      type="password"
+                      value={newUserForm.password}
+                      onChange={(e) => setNewUserForm({ ...newUserForm, password: e.target.value })}
+                      placeholder="••••••••"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      required
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateUserModalOpen(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingUser}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow"
+                    >
+                      {isSavingUser ? 'Creating...' : 'Create Account'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Modal 2: Edit User / Reset Password */}
+          {editingUser && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <h4 className="font-bold text-slate-100 flex items-center gap-2">
+                    <Edit2 className="w-4 h-4 text-blue-400" />
+                    Edit User: @{editingUser.username}
+                  </h4>
+                  <button onClick={() => setEditingUser(null)} className="text-slate-400 hover:text-white">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveEditUser} className="space-y-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1">Display Name:</label>
+                    <input
+                      type="text"
+                      value={editUserForm.display_name}
+                      onChange={(e) => setEditUserForm({ ...editUserForm, display_name: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1">Assigned Role:</label>
+                    <select
+                      value={editUserForm.role}
+                      onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value as UserRole })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    >
+                      <option value="operator">Parish Operator (Daily Controls & Presets)</option>
+                      <option value="viewer">Viewer (Read-Only Status / Kiosk)</option>
+                      <option value="admin">Administrator (Full Access & Schedules)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-300 block mb-1">
+                      Reset Password <span className="text-slate-500 font-normal">(leave blank to keep current)</span>:
+                    </label>
+                    <input
+                      type="password"
+                      value={editUserForm.new_password}
+                      onChange={(e) => setEditUserForm({ ...editUserForm, new_password: e.target.value })}
+                      placeholder="New password..."
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <span className="text-xs font-bold text-slate-300">Account Status:</span>
+                    <button
+                      type="button"
+                      onClick={() => setEditUserForm({ ...editUserForm, enabled: !editUserForm.enabled })}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold ${
+                        editUserForm.enabled
+                          ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-rose-600/20 text-rose-300 border border-rose-500/30'
+                      }`}
+                    >
+                      {editUserForm.enabled ? 'ACTIVE' : 'DEACTIVATED'}
+                    </button>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setEditingUser(null)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingUser}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow"
+                    >
+                      {isSavingUser ? 'Saving...' : 'Save Changes'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Modal 3: Delete Confirmation */}
+          {deleteConfirmUser && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4 text-center">
+                <div className="w-12 h-12 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
+                  <Trash2 className="w-6 h-6" />
+                </div>
+                <h4 className="font-bold text-slate-100 text-base">Delete User Account?</h4>
+                <p className="text-xs text-slate-400">
+                  Are you sure you want to delete user <strong className="text-white">@{deleteConfirmUser.username}</strong> ({deleteConfirmUser.display_name})? This action cannot be undone.
+                </p>
+                <div className="flex justify-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmUser(null)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteUser}
+                    disabled={isSavingUser}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold"
+                  >
+                    {isSavingUser ? 'Deleting...' : 'Confirm Delete'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

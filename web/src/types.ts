@@ -179,3 +179,36 @@ export interface UnassignedAddressesResponse {
   unassigned_addresses: number[];
   assigned_addresses: number[];
 }
+
+export type UserRole = 'admin' | 'operator' | 'viewer';
+
+export interface UserProfile {
+  id: number;
+  username: string;
+  role: UserRole;
+  display_name: string;
+  created_at?: string;
+  last_login?: string;
+  enabled?: boolean;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: UserProfile;
+}
+
+export interface CreateUserPayload {
+  username: string;
+  password: string;
+  role: UserRole;
+  display_name: string;
+}
+
+export interface UpdateUserPayload {
+  role?: UserRole;
+  display_name?: string;
+  enabled?: boolean;
+  new_password?: string;
+}
+

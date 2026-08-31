@@ -17,6 +17,20 @@ from gb50.models import (
 )
 from gb50.protocol import GB50ProtocolError
 from gb50.state_manager import StateManager
+from .auth import (
+    user_db,
+    hash_password,
+    verify_password,
+    create_access_token,
+    decode_access_token,
+    get_current_user,
+    require_role,
+    LoginRequest,
+    ChangePasswordRequest,
+    CreateUserRequest,
+    UpdateUserRequest,
+    UserProfileResponse,
+)
 
 logger = logging.getLogger("gb50.api")
 router = APIRouter(prefix="/api/v1")
@@ -154,6 +168,153 @@ class UpdatePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=3, max_length=10, description="New alphanumeric password")
 
 
+# --- Authentication Endpoints ---
+
+@router.post("/auth/login", summary="Sign In / Authenticate User")
+async def login(request: LoginRequest) -> Dict[str, Any]:
+    """Authenticate user with username and password, returning JWT access token."""
+    user = user_db.get_user_by_username(request.username)
+    if not user or not verify_password(request.password, user["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password.",
+        )
+    if not user.get("enabled", 1):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been deactivated. Please contact an administrator.",
+        )
+
+    user_db.update_last_login(user["id"])
+    token = create_access_token(user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "display_name": user["display_name"],
+            "created_at": user.get("created_at"),
+            "last_login": user.get("last_login"),
+        },
+    }
+
+
+@router.get("/auth/me", response_model=UserProfileResponse, summary="Get Current Authenticated User")
+async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)) -> UserProfileResponse:
+    """Retrieve profile and role information for currently authenticated user."""
+    return UserProfileResponse(
+        id=current_user["id"],
+        username=current_user["username"],
+        role=current_user["role"],
+        display_name=current_user["display_name"],
+        created_at=current_user.get("created_at"),
+        last_login=current_user.get("last_login"),
+        enabled=bool(current_user.get("enabled", 1)),
+    )
+
+
+@router.post("/auth/change-password", summary="Change Own Password")
+async def change_own_password(
+    request: ChangePasswordRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, str]:
+    """Change the password for the current authenticated user."""
+    if not verify_password(request.old_password, current_user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Incorrect current password.")
+    user_db.update_user(current_user["id"], new_password=request.new_password)
+    return {"status": "success", "message": "Password updated successfully."}
+
+
+# --- User Management Endpoints (Admin Only) ---
+
+@router.get("/users", response_model=List[UserProfileResponse], summary="List Proxy Users (Admin Only)")
+async def list_proxy_users(_admin: Dict[str, Any] = Depends(require_role("admin"))) -> List[UserProfileResponse]:
+    """List all proxy user accounts, roles, and status."""
+    raw_users = user_db.list_users()
+    return [
+        UserProfileResponse(
+            id=u["id"],
+            username=u["username"],
+            role=u["role"],
+            display_name=u["display_name"],
+            created_at=u.get("created_at"),
+            last_login=u.get("last_login"),
+            enabled=bool(u.get("enabled", 1)),
+        )
+        for u in raw_users
+    ]
+
+
+@router.post("/users", response_model=UserProfileResponse, summary="Create Proxy User (Admin Only)")
+async def create_proxy_user(
+    request: CreateUserRequest,
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> UserProfileResponse:
+    """Create a new proxy user account."""
+    existing = user_db.get_user_by_username(request.username)
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Username '{request.username}' already exists.")
+    user = user_db.create_user(
+        username=request.username,
+        password=request.password,
+        role=request.role,
+        display_name=request.display_name,
+    )
+    return UserProfileResponse(
+        id=user["id"],
+        username=user["username"],
+        role=user["role"],
+        display_name=user["display_name"],
+        created_at=user.get("created_at"),
+        last_login=user.get("last_login"),
+        enabled=bool(user.get("enabled", 1)),
+    )
+
+
+@router.put("/users/{user_id}", response_model=UserProfileResponse, summary="Update Proxy User (Admin Only)")
+async def update_proxy_user(
+    user_id: int,
+    request: UpdateUserRequest,
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> UserProfileResponse:
+    """Update a proxy user's role, display name, status, or password."""
+    target = user_db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user = user_db.update_user(
+        user_id=user_id,
+        role=request.role,
+        display_name=request.display_name,
+        enabled=request.enabled,
+        new_password=request.new_password,
+    )
+    return UserProfileResponse(
+        id=user["id"],
+        username=user["username"],
+        role=user["role"],
+        display_name=user["display_name"],
+        created_at=user.get("created_at"),
+        last_login=user.get("last_login"),
+        enabled=bool(user.get("enabled", 1)),
+    )
+
+
+@router.delete("/users/{user_id}", summary="Delete Proxy User (Admin Only)")
+async def delete_proxy_user(
+    user_id: int,
+    admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, str]:
+    """Delete a proxy user account."""
+    if user_id == admin["id"]:
+        raise HTTPException(status_code=400, detail="Cannot delete your own administrator account.")
+    success = user_db.delete_user(user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"status": "success", "message": "User deleted successfully."}
+
+
 # --- System & Group Routes ---
 
 @router.get("/system", response_model=SystemInfo, summary="Get Controller System Information")
@@ -170,6 +331,7 @@ async def get_system_info(mgr: StateManager = Depends(get_state_mgr)) -> SystemI
 async def update_system_info(
     request: UpdateSystemDataRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Update controller SystemData configuration (Facility Name, IP, Subnet, Gateway, formats, etc.)."""
     try:
@@ -212,6 +374,7 @@ async def control_group(
     group_id: int,
     request: GroupControlRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _user: Dict[str, Any] = Depends(require_role("operator")),
 ) -> GroupStatus:
     """Send operational commands (drive ON/OFF, mode, temperature setpoint, fan speed, louvers) to a group."""
     try:
@@ -229,6 +392,7 @@ async def rename_group(
     group_id: int,
     request: RenameGroupRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> GroupStatus:
     """Rename the web display name for an HVAC group."""
     try:
@@ -242,6 +406,7 @@ async def rename_group(
 async def create_group(
     request: CreateGroupRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Provision a new HVAC control group with assigned M-NET address and floor."""
     try:
@@ -277,6 +442,7 @@ async def configure_group_hardware(
     group_id: int,
     request: UpdateGroupConfigRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Configure a group's display name, primary IC address, slave ICs, remote controllers (RC), and floor."""
     try:
@@ -300,6 +466,7 @@ async def configure_group_hardware(
 async def delete_group(
     group_id: int,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Delete an HVAC group from the controller and unassign all associated M-NET devices."""
     try:
@@ -338,7 +505,11 @@ async def get_unassigned_addresses(
 
 
 @router.post("/groups/{group_id}/reset-filter", response_model=GroupStatus, summary="Reset Air Filter Sign")
-async def reset_filter(group_id: int, mgr: StateManager = Depends(get_state_mgr)) -> GroupStatus:
+async def reset_filter(
+    group_id: int, 
+    mgr: StateManager = Depends(get_state_mgr),
+    _user: Dict[str, Any] = Depends(require_role("operator")),
+) -> GroupStatus:
     """Clear the dirty filter maintenance sign on the controller for this group."""
     try:
         return await mgr.reset_filter(group_id)
@@ -351,6 +522,7 @@ async def reset_filter(group_id: int, mgr: StateManager = Depends(get_state_mgr)
 async def batch_control_groups(
     request: BatchControlRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _user: Dict[str, Any] = Depends(require_role("operator")),
 ) -> List[GroupStatus]:
     """Control multiple HVAC groups simultaneously in a single transaction."""
     try:
@@ -361,7 +533,11 @@ async def batch_control_groups(
 
 
 @router.post("/presets/{preset_name}", response_model=List[GroupStatus], summary="Apply Quick Scene Preset")
-async def apply_preset(preset_name: str, mgr: StateManager = Depends(get_state_mgr)) -> List[GroupStatus]:
+async def apply_preset(
+    preset_name: str, 
+    mgr: StateManager = Depends(get_state_mgr),
+    _user: Dict[str, Any] = Depends(require_role("operator")),
+) -> List[GroupStatus]:
     """Apply a one-touch church preset scene ('sunday', 'all_off', 'office', 'night')."""
     try:
         return await mgr.apply_preset(preset_name)
@@ -389,6 +565,7 @@ async def get_interlocks(mgr: StateManager = Depends(get_state_mgr)) -> List[Dic
 async def update_interlocks(
     request: UpdateInterlocksRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Update all Indoor Unit -> LOSSNAY ventilation pairings on the controller."""
     try:
@@ -438,6 +615,7 @@ async def get_weekly_schedule(
 async def update_today_schedule(
     request: UpdateTodayScheduleRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Update today's programmed timer events across one or more groups simultaneously."""
     try:
@@ -466,6 +644,7 @@ async def update_today_schedule(
 async def update_weekly_schedule(
     request: UpdateWeeklyScheduleRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Update weekly schedule pattern for a specific day across one or more groups."""
     try:
@@ -509,6 +688,7 @@ async def get_alarms(
 async def clear_alarms(
     priority_level: int = 2,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Clear resolved historical error log entries from controller memory."""
     try:
@@ -531,7 +711,10 @@ async def get_clock(mgr: StateManager = Depends(get_state_mgr)) -> Dict[str, Any
 
 
 @router.post("/clock/sync", summary="Synchronize Controller Clock")
-async def sync_clock(mgr: StateManager = Depends(get_state_mgr)) -> Dict[str, Any]:
+async def sync_clock(
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
     """Synchronize controller clock with current local time."""
     try:
         now = datetime.now()
@@ -556,6 +739,7 @@ async def get_summertime(mgr: StateManager = Depends(get_state_mgr)) -> Dict[str
 async def update_summertime(
     request: UpdateSummerTimeRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Update Daylight Saving Time (Summer Time) configuration on controller."""
     try:
@@ -580,6 +764,7 @@ async def get_setback(mgr: StateManager = Depends(get_state_mgr)) -> Dict[str, A
 async def update_setback(
     request: UpdateSetbackRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Update Night Setback schedule and drift temperature thresholds."""
     try:
@@ -601,6 +786,7 @@ async def update_setback(
 async def register_option_license(
     request: RegisterOptionRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Register and activate a 16-character license key code for an optional software function."""
     try:
@@ -612,9 +798,12 @@ async def register_option_license(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.get("/users", summary="Get User Accounts List")
-async def get_users(mgr: StateManager = Depends(get_state_mgr)) -> List[Dict[str, Any]]:
-    """Retrieve user accounts and decrypted passwords across categories."""
+@router.get("/controller-users", summary="Get Controller Hardware User Accounts List")
+async def get_controller_users(
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> List[Dict[str, Any]]:
+    """Retrieve user accounts and decrypted passwords stored directly on controller hardware."""
     try:
         users = []
         for cat in ["Administrator", "Maintenance", "PublicUser"]:
@@ -625,22 +814,23 @@ async def get_users(mgr: StateManager = Depends(get_state_mgr)) -> List[Dict[str
                 logger.debug("Could not fetch user category %s: %s", cat, uex)
         return users
     except Exception as ex:
-        logger.exception("Error in GET /api/v1/users: %s", ex)
+        logger.exception("Error in GET /api/v1/controller-users: %s", ex)
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.post("/users/{user}/password", summary="Change User Password")
-async def change_password(
+@router.post("/controller-users/{user}/password", summary="Change Controller Hardware User Password")
+async def change_controller_user_password(
     user: str,
     request: UpdatePasswordRequest,
     mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, str]:
-    """Change the password for a user account."""
+    """Change the password for a user account stored directly on controller hardware."""
     try:
         await mgr.client.set_user_password(user, request.new_password)
-        return {"status": "success", "message": f"Password for user '{user}' updated successfully"}
+        return {"status": "success", "message": f"Password for controller user '{user}' updated successfully"}
     except Exception as ex:
-        logger.exception("Error in POST /api/v1/users/%s/password: %s", user, ex)
+        logger.exception("Error in POST /api/v1/controller-users/%s/password: %s", user, ex)
         raise HTTPException(status_code=500, detail=str(ex))
 
 

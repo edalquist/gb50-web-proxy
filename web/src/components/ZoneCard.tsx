@@ -12,6 +12,7 @@ import {
   Compass
 } from 'lucide-react';
 import { GroupStatus, OperationMode } from '../types';
+import { useAuth } from '../AuthContext';
 
 interface ZoneCardProps {
   group: GroupStatus;
@@ -28,6 +29,8 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
   onOpenDetails,
   onResetFilter,
 }) => {
+  const { user } = useAuth();
+  const isViewer = user?.role === 'viewer';
   const isRunning = group.drive === 'ON';
 
   // Mode badge styling
@@ -93,14 +96,17 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onTogglePower(group);
+              if (!isViewer) onTogglePower(group);
             }}
+            disabled={isViewer}
             className={`p-2.5 rounded-xl border transition ${
-              isRunning
+              isViewer
+                ? 'bg-slate-800/50 text-slate-600 border-slate-800 cursor-not-allowed'
+                : isRunning
                 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 hover:bg-emerald-500/30 shadow-sm shadow-emerald-950'
                 : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200 hover:bg-slate-700'
             }`}
-            title={isRunning ? 'Turn Unit OFF' : 'Turn Unit ON'}
+            title={isViewer ? 'Power control disabled (Viewer mode)' : isRunning ? 'Turn Unit OFF' : 'Turn Unit ON'}
           >
             <Power className="w-4 h-4" />
           </button>
@@ -179,15 +185,17 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
             <AlertCircle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
             <span>Filter Needs Cleaning</span>
           </div>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onResetFilter(group.group_id);
-            }}
-            className="text-[11px] font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 px-2 py-0.5 rounded border border-amber-500/40 transition"
-          >
-            Reset
-          </button>
+          {!isViewer && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onResetFilter(group.group_id);
+              }}
+              className="text-[11px] font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 px-2 py-0.5 rounded border border-amber-500/40 transition"
+            >
+              Reset
+            </button>
+          )}
         </div>
       )}
 
@@ -197,7 +205,7 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
           onClick={() => onOpenDetails(group)}
           className="w-full py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 transition text-center"
         >
-          Adjust Settings & Details
+          {isViewer ? 'View Details & Status' : 'Adjust Settings & Details'}
         </button>
       </div>
     </div>

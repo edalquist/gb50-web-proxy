@@ -102,7 +102,13 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         assert me_resp.status_code == 200
         assert me_resp.json()["username"] == "admin"
 
-        # 5. Create a Viewer User
+        # 5. Create a Viewer User (clean up first if already exists from prior test runs)
+        existing_users = await client.get("/api/v1/users", headers=admin_headers)
+        if existing_users.status_code == 200:
+            for u in existing_users.json():
+                if u["username"] == "kiosk_user":
+                    await client.delete(f"/api/v1/users/{u['id']}", headers=admin_headers)
+
         create_resp = await client.post(
             "/api/v1/users",
             headers=admin_headers,

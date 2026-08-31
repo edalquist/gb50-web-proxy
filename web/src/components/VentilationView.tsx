@@ -1,6 +1,7 @@
 import React from 'react';
 import { Wind, Power, AlertCircle, Fan } from 'lucide-react';
 import { GroupStatus, OperationMode, FanSpeed, GroupControlRequest } from '../types';
+import { useAuth } from '../AuthContext';
 
 interface VentilationViewProps {
   groups: GroupStatus[];
@@ -13,17 +14,22 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
   onControlGroup,
   onResetFilter,
 }) => {
+  const { user } = useAuth();
+  const isViewer = user?.role === 'viewer';
   const lossnayUnits = groups.filter((g) => g.model === 'LC');
 
   const setLossnayMode = async (groupId: number, mode: OperationMode) => {
+    if (isViewer) return;
     await onControlGroup(groupId, { mode });
   };
 
   const setLossnayFan = async (groupId: number, fan_speed: FanSpeed) => {
+    if (isViewer) return;
     await onControlGroup(groupId, { fan_speed });
   };
 
   const togglePower = async (group: GroupStatus) => {
+    if (isViewer) return;
     await onControlGroup(group.group_id, {
       drive: group.drive === 'ON' ? 'OFF' : 'ON',
     });
@@ -31,6 +37,14 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      {/* Read-Only Notice for Viewers */}
+      {isViewer && (
+        <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-xs text-amber-300 font-semibold flex items-center gap-2 shadow">
+          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>Viewing fresh air ventilation in Read-Only mode. Power and airflow controls are disabled.</span>
+        </div>
+      )}
+
       {/* Educational Banner for Non-Expert Users */}
       <div className="bg-gradient-to-r from-teal-950/40 to-slate-900 border border-teal-500/30 rounded-2xl p-5 flex items-start gap-4 shadow-sm">
         <div className="p-3 bg-teal-500/20 text-teal-300 rounded-xl border border-teal-500/30 flex-shrink-0">
@@ -77,12 +91,15 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
 
                 <button
                   onClick={() => togglePower(unit)}
+                  disabled={isViewer}
                   className={`p-3 rounded-xl border transition ${
-                    isRunning
+                    isViewer
+                      ? 'bg-slate-800/50 text-slate-600 border-slate-800 cursor-not-allowed'
+                      : isRunning
                       ? 'bg-teal-500/20 text-teal-300 border-teal-500/40 hover:bg-teal-500/30'
                       : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                   }`}
-                  title={isRunning ? 'Turn Ventilator OFF' : 'Turn Ventilator ON'}
+                  title={isViewer ? 'Power control disabled (Viewer mode)' : isRunning ? 'Turn Ventilator OFF' : 'Turn Ventilator ON'}
                 >
                   <Power className="w-5 h-5" />
                 </button>
@@ -118,11 +135,17 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
                     <button
                       key={mode}
                       onClick={() => setLossnayMode(unit.group_id, mode)}
+                      disabled={isViewer}
                       className={`p-2.5 rounded-xl border text-xs font-semibold transition text-center ${
-                        unit.mode === mode
+                        isViewer
+                          ? unit.mode === mode
+                            ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
+                            : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
+                          : unit.mode === mode
                           ? 'bg-teal-600/30 text-teal-200 border-teal-500 shadow-md'
                           : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                       }`}
+                      title={isViewer ? 'Disabled in Viewer mode' : undefined}
                     >
                       {label}
                     </button>
@@ -143,11 +166,17 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
                     <button
                       key={speed}
                       onClick={() => setLossnayFan(unit.group_id, speed)}
+                      disabled={isViewer}
                       className={`p-2.5 rounded-xl border text-xs font-semibold transition text-center flex items-center justify-center gap-2 ${
-                        unit.fan_speed === speed
+                        isViewer
+                          ? unit.fan_speed === speed
+                            ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
+                            : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
+                          : unit.fan_speed === speed
                           ? 'bg-blue-600/30 text-blue-200 border-blue-500 shadow-md'
                           : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                       }`}
+                      title={isViewer ? 'Disabled in Viewer mode' : undefined}
                     >
                       <Fan className="w-3.5 h-3.5" />
                       {label}
@@ -163,12 +192,14 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
                     <AlertCircle className="w-4 h-4 text-amber-400" />
                     <span>Ventilator Filter Cleaning Alert</span>
                   </div>
-                  <button
-                    onClick={() => onResetFilter(unit.group_id)}
-                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded-lg text-xs font-bold border border-amber-500/40 transition"
-                  >
-                    Reset Filter
-                  </button>
+                  {!isViewer && (
+                    <button
+                      onClick={() => onResetFilter(unit.group_id)}
+                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded-lg text-xs font-bold border border-amber-500/40 transition"
+                    >
+                      Reset Filter
+                    </button>
+                  )}
                 </div>
               )}
             </div>

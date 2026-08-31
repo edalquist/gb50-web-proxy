@@ -551,30 +551,32 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               </div>
             </div>
 
-            <button
-              onClick={() => {
-                setEditingProgram({
-                  id: `prog-${Date.now()}`,
-                  name: 'New Activity Program',
-                  description: 'Custom church activity schedule routine.',
-                  days: [7],
-                  start_hour: 8,
-                  start_minute: 0,
-                  end_hour: 14,
-                  end_minute: 0,
-                  drive: 'ON',
-                  mode: 'AUTO',
-                  set_temp_f: 70.0,
-                  set_temp_c: 21.1,
-                  fan_speed: 'AUTO',
-                  assigned_group_ids: [],
-                });
-                setIsProgramModalOpen(true);
-              }}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-purple-950 transition shrink-0 flex items-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" /> Create Program
-            </button>
+            {isAdmin && (
+              <button
+                onClick={() => {
+                  setEditingProgram({
+                    id: `prog-${Date.now()}`,
+                    name: 'New Activity Program',
+                    description: 'Custom church activity schedule routine.',
+                    days: [7],
+                    start_hour: 8,
+                    start_minute: 0,
+                    end_hour: 14,
+                    end_minute: 0,
+                    drive: 'ON',
+                    mode: 'AUTO',
+                    set_temp_f: 70.0,
+                    set_temp_c: 21.1,
+                    fan_speed: 'AUTO',
+                    assigned_group_ids: [],
+                  });
+                  setIsProgramModalOpen(true);
+                }}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-purple-950 transition shrink-0 flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> Create Program
+              </button>
+            )}
           </div>
 
           {/* Activity Cards Grid */}
@@ -639,20 +641,22 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                               className="px-2.5 py-1 bg-slate-800 rounded-lg text-[11px] text-slate-200 font-semibold border border-slate-700/80 flex items-center gap-1"
                             >
                               <span>{g?.name || `Unit ${gid}`}</span>
-                              <button
-                                onClick={() => {
-                                  setPrograms((prev) =>
-                                    prev.map((p) =>
-                                      p.id === program.id
-                                        ? { ...p, assigned_group_ids: p.assigned_group_ids.filter((x) => x !== gid) }
-                                        : p
-                                    )
-                                  );
-                                }}
-                                className="text-slate-400 hover:text-rose-400 ml-1 text-xs"
-                              >
-                                ×
-                              </button>
+                              {isAdmin && (
+                                <button
+                                  onClick={() => {
+                                    setPrograms((prev) =>
+                                      prev.map((p) =>
+                                        p.id === program.id
+                                          ? { ...p, assigned_group_ids: p.assigned_group_ids.filter((x) => x !== gid) }
+                                          : p
+                                      )
+                                    );
+                                  }}
+                                  className="text-slate-400 hover:text-rose-400 ml-1 text-xs"
+                                >
+                                  ×
+                                </button>
+                              )}
                             </span>
                           );
                         })
@@ -667,18 +671,30 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 <div className="flex items-center gap-2 pt-4 border-t border-slate-800">
                   <button
                     onClick={() => {
+                      if (!isAdmin) return;
                       setEditingProgram(program);
                       setIsProgramModalOpen(true);
                     }}
-                    className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-xl text-slate-200 transition border border-slate-700"
+                    disabled={!isAdmin}
+                    className={`flex-1 py-2 text-xs font-bold rounded-xl transition border ${
+                      !isAdmin
+                        ? 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-not-allowed'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                    }`}
+                    title={!isAdmin ? 'Admin permissions required to edit routines' : undefined}
                   >
                     ⚙️ Edit Routine & Rooms
                   </button>
 
                   <button
                     onClick={() => handleSyncProgram(program)}
-                    disabled={isSaving}
-                    className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-purple-950 flex items-center gap-1.5 disabled:opacity-40"
+                    disabled={!isAdmin || isSaving}
+                    className={`px-4 py-2 text-xs font-bold rounded-xl transition flex items-center gap-1.5 ${
+                      !isAdmin
+                        ? 'bg-slate-800/40 text-slate-500 border border-slate-800 cursor-not-allowed'
+                        : 'bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-950'
+                    }`}
+                    title={!isAdmin ? 'Admin permissions required to sync schedules to hardware' : undefined}
                   >
                     <Zap className="w-3.5 h-3.5" /> Sync to GB-50
                   </button>
@@ -813,20 +829,29 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
+                    if (!isAdmin) return;
                     setDuplicateTargetDays([1, 2, 3, 4, 5].filter(d => d !== selectedDay));
                     setIsDuplicateModalOpen(true);
                   }}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl text-slate-200 border border-slate-700 flex items-center gap-1.5"
+                  disabled={!isAdmin}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-xl border flex items-center gap-1.5 ${
+                    !isAdmin
+                      ? 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-not-allowed'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                  }`}
+                  title={!isAdmin ? 'Admin permissions required to duplicate schedules' : undefined}
                 >
                   <Copy className="w-3.5 h-3.5 text-blue-400" /> Duplicate Day to...
                 </button>
 
-                <button
-                  onClick={handleOpenAddEvent}
-                  className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded-xl text-white shadow flex items-center gap-1.5"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add Scheduled Event
-                </button>
+                {isAdmin && (
+                  <button
+                    onClick={handleOpenAddEvent}
+                    className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded-xl text-white shadow flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Scheduled Event
+                  </button>
+                )}
               </div>
             </div>
 
@@ -953,28 +978,34 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleOpenEditEvent(idx, item)}
-                        className="p-2 hover:bg-slate-800 rounded-xl text-slate-400 hover:text-white transition text-xs"
-                        title="Edit event"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteEvent(idx)}
-                        className="p-2 hover:bg-rose-950/60 rounded-xl text-slate-400 hover:text-rose-400 transition text-xs"
-                        title="Delete event"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    {isAdmin && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleOpenEditEvent(idx, item)}
+                          className="p-2 hover:bg-slate-800 rounded-xl text-slate-400 hover:text-white transition text-xs"
+                          title="Edit event"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEvent(idx)}
+                          className="p-2 hover:bg-rose-950/60 rounded-xl text-slate-400 hover:text-rose-400 transition text-xs"
+                          title="Delete event"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             ) : (
               <div className="text-center py-6 text-xs text-slate-500">
-                Click <strong>+ Add Scheduled Event</strong> above to create times and setpoints for this day.
+                {isAdmin ? (
+                  <span>Click <strong>+ Add Scheduled Event</strong> above to create times and setpoints for this day.</span>
+                ) : (
+                  <span>No scheduled events programmed for this day.</span>
+                )}
               </div>
             )}
           </div>
@@ -988,8 +1019,13 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
             <button
               onClick={handleSavePlannerToHardware}
-              disabled={isSaving || selectedGroupIds.length === 0}
-              className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-950 transition flex items-center gap-2 disabled:opacity-40"
+              disabled={!isAdmin || isSaving || selectedGroupIds.length === 0}
+              className={`px-6 py-2.5 font-bold text-xs rounded-xl transition flex items-center gap-2 ${
+                !isAdmin
+                  ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-950 disabled:opacity-40'
+              }`}
+              title={!isAdmin ? 'Admin permissions required to save schedules to hardware' : undefined}
             >
               <Save className="w-4 h-4" />
               {isSaving

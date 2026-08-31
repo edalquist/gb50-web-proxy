@@ -128,13 +128,15 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
             ) : (
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold text-slate-100">{group.name}</h2>
-                <button
-                  onClick={() => setIsEditingName(true)}
-                  className="p-1 text-slate-400 hover:text-blue-400 transition"
-                  title="Rename Zone"
-                >
-                  <Edit2 className="w-3.5 h-3.5" />
-                </button>
+                {!isViewer && (
+                  <button
+                    onClick={() => setIsEditingName(true)}
+                    className="p-1 text-slate-400 hover:text-blue-400 transition"
+                    title="Rename Zone"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
                   Group {group.group_id} • Address {group.address}
                 </span>
@@ -158,6 +160,13 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
 
         {/* Modal Scrollable Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1">
+          {/* Viewer Notice */}
+          {isViewer && (
+            <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-300 font-semibold flex items-center justify-between">
+              <span>Viewer (Read-Only) Mode: Control adjustments and setpoint modifications are disabled.</span>
+            </div>
+          )}
+
           {/* Power Drive Toggle */}
           <div className="flex items-center justify-between bg-slate-950/60 p-4 rounded-xl border border-slate-800">
             <div>
@@ -167,12 +176,16 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
               </span>
             </div>
             <button
-              onClick={() => setDrive(drive === 'ON' ? 'OFF' : 'ON')}
+              onClick={() => !isViewer && setDrive(drive === 'ON' ? 'OFF' : 'ON')}
+              disabled={isViewer}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition ${
-                drive === 'ON'
+                isViewer
+                  ? 'bg-slate-800/50 text-slate-600 border border-slate-800 cursor-not-allowed'
+                  : drive === 'ON'
                   ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-950 hover:bg-emerald-500'
                   : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700'
               }`}
+              title={isViewer ? 'Power control disabled (Viewer mode)' : undefined}
             >
               <Power className="w-4 h-4" />
               {drive === 'ON' ? 'POWER ON' : 'POWER OFF'}
@@ -187,10 +200,10 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
               </span>
               <div className="flex items-center justify-between">
                 <button
-                  onClick={() => adjustTemp(-1)}
-                  disabled={drive !== 'ON'}
-                  className="p-3 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 active:scale-95 transition disabled:opacity-40"
-                  title="Decrease Temperature"
+                  onClick={() => !isViewer && adjustTemp(-1)}
+                  disabled={isViewer || drive !== 'ON'}
+                  className="p-3 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={isViewer ? 'Disabled in Viewer mode' : 'Decrease Temperature'}
                 >
                   <Minus className="w-5 h-5" />
                 </button>
@@ -206,10 +219,10 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
                 </div>
 
                 <button
-                  onClick={() => adjustTemp(1)}
-                  disabled={drive !== 'ON'}
-                  className="p-3 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 active:scale-95 transition disabled:opacity-40"
-                  title="Increase Temperature"
+                  onClick={() => !isViewer && adjustTemp(1)}
+                  disabled={isViewer || drive !== 'ON'}
+                  className="p-3 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={isViewer ? 'Disabled in Viewer mode' : 'Increase Temperature'}
                 >
                   <Plus className="w-5 h-5" />
                 </button>
@@ -232,9 +245,14 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
                   ].map(({ val, label, icon: Icon }) => (
                     <button
                       key={val}
-                      onClick={() => setMode(val as OperationMode)}
+                      onClick={() => !isViewer && setMode(val as OperationMode)}
+                      disabled={isViewer}
                       className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border text-xs font-semibold transition ${
-                        mode === val
+                        isViewer
+                          ? mode === val
+                            ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
+                            : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
+                          : mode === val
                           ? 'bg-blue-600/30 text-blue-300 border-blue-500 shadow-md'
                           : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                       }`}
@@ -255,9 +273,14 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
                   ].map(({ val, label, icon: Icon }) => (
                     <button
                       key={val}
-                      onClick={() => setMode(val as OperationMode)}
+                      onClick={() => !isViewer && setMode(val as OperationMode)}
+                      disabled={isViewer}
                       className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border text-xs font-semibold transition ${
-                        mode === val
+                        isViewer
+                          ? mode === val
+                            ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
+                            : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
+                          : mode === val
                           ? 'bg-blue-600/30 text-blue-300 border-blue-500 shadow-md'
                           : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                       }`}
@@ -286,9 +309,14 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
               ].map(({ val, label }) => (
                 <button
                   key={val}
-                  onClick={() => setFanSpeed(val as FanSpeed)}
+                  onClick={() => !isViewer && setFanSpeed(val as FanSpeed)}
+                  disabled={isViewer}
                   className={`p-2.5 rounded-xl border text-xs font-semibold transition text-center ${
-                    fanSpeed === val
+                    isViewer
+                      ? fanSpeed === val
+                        ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
+                        : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
+                      : fanSpeed === val
                       ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500 shadow-md'
                       : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                   }`}
@@ -316,9 +344,14 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
                 ].map(({ val, label }) => (
                   <button
                     key={val}
-                    onClick={() => setAirDir(val as AirDirection)}
+                    onClick={() => !isViewer && setAirDir(val as AirDirection)}
+                    disabled={isViewer}
                     className={`p-2.5 rounded-xl border text-xs font-semibold transition text-center ${
-                      airDir === val
+                      isViewer
+                        ? airDir === val
+                          ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
+                          : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
+                        : airDir === val
                         ? 'bg-purple-600/30 text-purple-300 border-purple-500 shadow-md'
                         : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
                     }`}
@@ -333,9 +366,12 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
           {/* Remote Controller Lockout & Filter Reset */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800">
             <button
-              onClick={() => setRemoteLock(remoteLock === 'PROHIBIT' ? 'PERMIT' : 'PROHIBIT')}
+              onClick={() => !isViewer && setRemoteLock(remoteLock === 'PROHIBIT' ? 'PERMIT' : 'PROHIBIT')}
+              disabled={isViewer}
               className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-xs font-semibold transition ${
-                remoteLock === 'PROHIBIT'
+                isViewer
+                  ? 'bg-slate-900/40 text-slate-600 border-slate-800 cursor-not-allowed'
+                  : remoteLock === 'PROHIBIT'
                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
               }`}
@@ -345,8 +381,13 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
             </button>
 
             <button
-              onClick={() => onResetFilter(group.group_id)}
-              className="flex items-center justify-center gap-2 p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition"
+              onClick={() => !isViewer && onResetFilter(group.group_id)}
+              disabled={isViewer}
+              className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-xs font-semibold transition ${
+                isViewer
+                  ? 'bg-slate-900/40 text-slate-600 border-slate-800 cursor-not-allowed'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+              }`}
             >
               <RotateCcw className="w-4 h-4 text-slate-400" />
               Reset Air Filter Sign

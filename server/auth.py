@@ -377,6 +377,7 @@ def require_role(min_role: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Requires '{min_role}' role (current role: '{user_role}').",
             )
+        return user
     return _role_checker
 
 

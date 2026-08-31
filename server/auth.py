@@ -377,6 +377,80 @@ def require_role(min_role: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Requires '{min_role}' role (current role: '{user_role}').",
             )
-        return user
-
     return _role_checker
+
+
+# --- Command-Line User & Password Management / Lockout Recovery ---
+
+def _cli() -> None:
+    import sys
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print("\n=== GB-50 Gateway Credential & User Management CLI ===")
+        print("Usage:")
+        print("  python -m server.auth list")
+        print("  python -m server.auth reset-password <username> <new_password>")
+        print("  python -m server.auth add-user <username> <password> <role> \"<display_name>\"")
+        print("  python -m server.auth reset-db\n")
+        print("Roles: admin, operator, viewer")
+        print(f"Database location: {DB_PATH}\n")
+        return
+
+    cmd = args[0].lower()
+    if cmd == "list":
+        users = user_db.list_users()
+        print(f"\nDiscovered {len(users)} user account(s) in {DB_PATH}:")
+        print(f"{'ID':<4} {'Username':<18} {'Role':<12} {'Status':<10} {'Display Name'}")
+        print("-" * 65)
+        for u in users:
+            status_str = "ACTIVE" if u.get("enabled", 1) else "DISABLED"
+            print(f"{u['id']:<4} {u['username']:<18} {u['role']:<12} {status_str:<10} {u['display_name']}")
+        print()
+
+    elif cmd == "reset-password":
+        if len(args) < 3:
+            print("Error: Missing arguments. Usage: python -m server.auth reset-password <username> <new_password>")
+            sys.exit(1)
+        username = args[1]
+        new_pwd = args[2]
+        user = user_db.get_user_by_username(username)
+        if not user:
+            print(f"Error: User '{username}' not found.")
+            sys.exit(1)
+        user_db.update_user(user["id"], new_password=new_pwd, enabled=True)
+        print(f"✓ Successfully reset password for '{username}'. Account is now active.")
+
+    elif cmd == "add-user":
+        if len(args) < 5:
+            print("Error: Missing arguments. Usage: python -m server.auth add-user <username> <password> <role> \"<display_name>\"")
+            sys.exit(1)
+        username = args[1]
+        password = args[2]
+        role = args[3].lower()
+        display_name = args[4]
+        if role not in ROLE_HIERARCHY:
+            print(f"Error: Invalid role '{role}'. Choose from: admin, operator, viewer")
+            sys.exit(1)
+        existing = user_db.get_user_by_username(username)
+        if existing:
+            user_db.update_user(existing["id"], new_password=password, role=role, display_name=display_name, enabled=True)
+            print(f"✓ Updated existing user '{username}' (Role: {role}).")
+        else:
+            user_db.create_user(username=username, password=password, role=role, display_name=display_name)
+            print(f"✓ Created new user '{username}' (Role: {role}, Display: {display_name}).")
+
+    elif cmd == "reset-db":
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+            print(f"Removed database at {DB_PATH}.")
+        user_db.init_db()
+        print("✓ Initialized fresh database with accounts (configure credentials explicitly).")
+
+    else:
+        print(f"Unknown command: '{cmd}'. Run with --help for usage.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    _cli()
+

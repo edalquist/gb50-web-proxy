@@ -274,12 +274,13 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         ? (sorted[i + 1].time_str || `${String(sorted[i + 1].hour).padStart(2, '0')}:${String(sorted[i + 1].minute).padStart(2, '0')}`)
         : '24:00';
 
+      const isOff = ev.drive === 'OFF';
       spans.push({
         startMin,
         endMin: nextMin,
         startStr,
         endStr,
-        drive: ev.drive === 'OFF' ? 'OFF' : 'ON',
+        drive: isOff ? 'OFF' : 'ON',
         mode: ev.mode,
         tempF: ev.set_temp_f || (ev.set_temp_c ? Math.round((ev.set_temp_c * 9/5) + 32) : 71),
         tempC: ev.set_temp_c,
@@ -813,7 +814,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                           {DAYS_OF_WEEK.map((d) => {
                             const dayEvents = prog.weekly_pattern[d.id] || prog.weekly_pattern[String(d.id) as any] || [];
                             const hasEvents = dayEvents.length > 0;
-                            const hasOn = dayEvents.some((e: any) => e.drive === 'ON');
+                            const hasOn = dayEvents.some((e: any) => e.drive !== 'OFF');
 
                             return (
                               <div key={d.id} className="flex flex-col items-center gap-1">
@@ -1081,8 +1082,14 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             <div className="grid grid-cols-2 sm:grid-cols-7 gap-2">
               {DAYS_OF_WEEK.map((d) => {
                 const dayEvents = (weeklyPatterns[primaryGroupId]?.[d.id] || weeklyPatterns[primaryGroupId]?.[String(d.id) as any] || []);
-                const onEvent = dayEvents.find((e) => e.drive === 'ON');
+                const onEvent = dayEvents.find((e) => e.drive !== 'OFF');
                 const isSelectedDay = selectedDay === d.id;
+
+                const tempDisplay = onEvent ? (
+                  tempUnit === 'F'
+                    ? (onEvent.set_temp_f ? `${onEvent.set_temp_f}°F` : (onEvent.set_temp_c ? `${Math.round((onEvent.set_temp_c * 9/5) + 32)}°F` : 'ON'))
+                    : (onEvent.set_temp_c ? `${onEvent.set_temp_c}°C` : (onEvent.set_temp_f ? `${Math.round(((onEvent.set_temp_f - 32) * 5/9) * 2)/2}°C` : 'ON'))
+                ) : null;
 
                 return (
                   <button
@@ -1101,7 +1108,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                     <div className={`text-[10px] font-mono mt-1 truncate ${isSelectedDay ? 'text-blue-100' : 'text-slate-500'}`}>
                       {dayEvents.length > 0 ? (
                         onEvent ? (
-                          `${onEvent.time_str} (${onEvent.set_temp_f ? `${onEvent.set_temp_f}°F` : onEvent.mode || 'ON'})`
+                          `${onEvent.time_str} (${tempDisplay})`
                         ) : `${dayEvents.length} Events`
                       ) : (
                         'Off / Standby'
@@ -1234,7 +1241,11 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {currentDayEvents.map((ev, idx) => {
-                    const isOn = ev.drive === 'ON';
+                    const isOff = ev.drive === 'OFF';
+                    const isOn = !isOff;
+                    const resolvedTempF = ev.set_temp_f || (ev.set_temp_c ? Math.round((ev.set_temp_c * 9/5) + 32) : null);
+                    const resolvedTempC = ev.set_temp_c || (ev.set_temp_f ? Math.round(((ev.set_temp_f - 32) * 5/9) * 2)/2 : null);
+
                     return (
                       <div
                         key={idx}
@@ -1253,19 +1264,22 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                               <span className={isOn ? 'text-emerald-300' : 'text-slate-300'}>
                                 {isOn ? 'Start Climate Conditioning' : 'System Shutdown / Setback'}
                               </span>
-                              <span className={`px-1.5 py-0.2 rounded text-[10px] uppercase font-bold ${
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold ${
                                 isOn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
                               }`}>
-                                {ev.drive}
+                                {ev.drive || (isOn ? 'ON' : 'OFF')}
                               </span>
                             </div>
                             {isOn && (
                               <p className="text-[11px] text-slate-400 mt-0.5">
                                 Mode: <strong className="text-slate-200">{ev.mode || 'AUTO'}</strong>
-                                {ev.set_temp_f && (
-                                  <> • Setpoint: <strong className="text-emerald-300 font-mono">{tempUnit === 'F' ? `${ev.set_temp_f}°F` : `${ev.set_temp_c}°C`}</strong></>
+                                {(resolvedTempF || resolvedTempC) && (
+                                  <> • Setpoint: <strong className="text-emerald-300 font-mono">
+                                    {tempUnit === 'F' ? `${resolvedTempF}°F` : `${resolvedTempC}°C`}
+                                  </strong></>
                                 )}
                                 {ev.fan_speed && <> • Fan: <strong className="text-slate-200">{ev.fan_speed}</strong></>}
+                                {ev.air_direction && <> • Vane: <strong className="text-slate-200">{ev.air_direction}</strong></>}
                               </p>
                             )}
                           </div>
@@ -1424,7 +1438,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
                       {DAYS_OF_WEEK.map((d) => {
                         const dayEvents = weeklyPatterns[g.group_id]?.[d.id] || weeklyPatterns[g.group_id]?.[String(d.id) as any] || [];
-                        const onEvent = dayEvents.find((e) => e.drive === 'ON');
+                        const onEvent = dayEvents.find((e) => e.drive !== 'OFF');
                         const offEvent = dayEvents.find((e) => e.drive === 'OFF');
 
                         return (
@@ -1690,30 +1704,39 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 {(programFormPattern[programEditorDay] || []).length === 0 ? (
                   <p className="text-center text-xs text-slate-500 py-3">No timer events for this day.</p>
                 ) : (
-                  (programFormPattern[programEditorDay] || []).map((ev, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-slate-900 p-2 rounded-lg border border-slate-800/80 flex items-center justify-between text-xs"
-                    >
-                      <div className="flex items-center gap-2 font-mono">
-                        <span className="font-bold text-slate-200">{ev.time_str}</span>
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${ev.drive === 'ON' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-                          {ev.drive}
-                        </span>
-                        {ev.drive === 'ON' && (
-                          <span className="text-blue-400 text-[10px]">{ev.mode || 'AUTO'} {ev.set_temp_f ? `${ev.set_temp_f}°F` : ''}</span>
-                        )}
+                  (programFormPattern[programEditorDay] || []).map((ev, idx) => {
+                    const isOff = ev.drive === 'OFF';
+                    const isOn = !isOff;
+                    const resolvedTempF = ev.set_temp_f || (ev.set_temp_c ? Math.round((ev.set_temp_c * 9/5) + 32) : null);
+                    const resolvedTempC = ev.set_temp_c || (ev.set_temp_f ? Math.round(((ev.set_temp_f - 32) * 5/9) * 2)/2 : null);
+
+                    return (
+                      <div
+                        key={idx}
+                        className="bg-slate-900 p-2 rounded-lg border border-slate-800/80 flex items-center justify-between text-xs"
+                      >
+                        <div className="flex items-center gap-2 font-mono">
+                          <span className="font-bold text-slate-200">{ev.time_str}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${isOn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                            {ev.drive || (isOn ? 'ON' : 'OFF')}
+                          </span>
+                          {isOn && (
+                            <span className="text-blue-400 text-[10px]">
+                              {ev.mode || 'AUTO'} {resolvedTempF ? `${tempUnit === 'F' ? `${resolvedTempF}°F` : `${resolvedTempC}°C`}` : ''}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex gap-1">
+                          <button onClick={() => handleOpenEventModal('programEditor', idx)} className="p-1 text-slate-400 hover:text-blue-400">
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button onClick={() => handleDeleteEvent('programEditor', idx)} className="p-1 text-slate-400 hover:text-red-400">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex gap-1">
-                        <button onClick={() => handleOpenEventModal('programEditor', idx)} className="p-1 text-slate-400 hover:text-blue-400">
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => handleDeleteEvent('programEditor', idx)} className="p-1 text-slate-400 hover:text-red-400">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>

@@ -772,6 +772,100 @@ async def reconstruct_schedules_route(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+@router.get("/schedules", summary="Get All Groups Today Schedules")
+async def get_all_schedules(mgr: StateManager = Depends(get_state_mgr)) -> Dict[int, List[ScheduleItem]]:
+    """Retrieve today's programmed timer events across all configured groups simultaneously."""
+    try:
+        return await mgr.client.get_all_today_schedules()
+    except Exception as ex:
+        logger.exception("Error in GET /api/v1/schedules: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.put("/schedules/today", summary="Update Today's Schedule for Group(s)")
+async def update_today_schedule(
+    request: UpdateTodayScheduleRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Update today's programmed timer events across one or more groups simultaneously."""
+    try:
+        events_dicts = []
+        for ev in request.events:
+            events_dicts.append({
+                "hour": ev.hour,
+                "minute": ev.minute,
+                "drive": ev.drive,
+                "mode": ev.mode or "AUTO",
+                "set_temp_c": ev.resolved_temp_c(),
+                "fan_speed": ev.fan_speed or "AUTO",
+                "air_direction": ev.air_direction or "",
+            })
+        await mgr.client.set_today_schedule(request.group_ids, events_dicts)
+        return {
+            "status": "success",
+            "message": f"Updated today's schedule with {len(request.events)} events for {len(request.group_ids)} zones",
+        }
+    except Exception as ex:
+        logger.exception("Error in PUT /api/v1/schedules/today: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.put("/schedules/weekly", summary="Update Weekly Schedule for Group(s)")
+async def update_weekly_schedule(
+    request: UpdateWeeklyScheduleRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Update weekly schedule pattern for a specific day across one or more groups."""
+    try:
+        events_dicts = []
+        for ev in request.events:
+            events_dicts.append({
+                "hour": ev.hour,
+                "minute": ev.minute,
+                "drive": ev.drive,
+                "mode": ev.mode or "AUTO",
+                "set_temp_c": ev.resolved_temp_c(),
+                "fan_speed": ev.fan_speed or "AUTO",
+                "air_direction": ev.air_direction or "",
+            })
+        await mgr.client.set_weekly_schedule(request.group_ids, request.day_of_week, events_dicts)
+        day_names = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_name = day_names[request.day_of_week] if 1 <= request.day_of_week <= 7 else str(request.day_of_week)
+        return {
+            "status": "success",
+            "message": f"Updated {day_name} weekly schedule with {len(request.events)} events for {len(request.group_ids)} zones",
+        }
+    except Exception as ex:
+        logger.exception("Error in PUT /api/v1/schedules/weekly: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.get("/schedules/{group_id}", response_model=List[ScheduleItem], summary="Get Group Today Schedule")
+async def get_schedule(group_id: int, mgr: StateManager = Depends(get_state_mgr)) -> List[ScheduleItem]:
+    """Retrieve today's programmed timer events for a specific group."""
+    try:
+        return await mgr.get_schedule(group_id)
+    except Exception as ex:
+        logger.exception("Error in GET /api/v1/schedules/%s: %s", group_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.get("/schedules/{group_id}/weekly", summary="Get Group Weekly Schedule Patterns")
+async def get_weekly_schedule(
+    group_id: int,
+    season: int = 1,
+    mgr: StateManager = Depends(get_state_mgr),
+) -> Dict[int, List[ScheduleItem]]:
+    """Retrieve full 7-day weekly schedule patterns for a group (day 1=Monday .. 7=Sunday)."""
+    try:
+        return await mgr.client.get_weekly_schedule(group_id, season=season)
+    except Exception as ex:
+        logger.exception("Error in GET /api/v1/schedules/%s/weekly: %s", group_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 @router.get("/alarms", response_model=List[AlarmRecord], summary="Get Active System Alarms & Diagnostics")
 async def get_alarms(
     priority_level: Optional[int] = None,

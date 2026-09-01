@@ -251,9 +251,9 @@ async def reconstruct_schedules_from_controller(
 
     group_patterns: Dict[int, Dict[int, List[Dict[str, Any]]]] = {}
     
-    async def _fetch_group_weekly(gid: int):
+    for g in groups:
         try:
-            p_items = await client.get_weekly_schedule(gid)
+            p_items = await client.get_weekly_schedule(g.group_id)
             p_dict: Dict[int, List[Dict[str, Any]]] = {}
             for day, items in p_items.items():
                 p_dict[day] = [
@@ -269,13 +269,11 @@ async def reconstruct_schedules_from_controller(
                     }
                     for item in items
                 ]
-            group_patterns[gid] = p_dict
+            group_patterns[g.group_id] = p_dict
         except Exception as ex:
-            logger.warning(f"Could not fetch weekly schedule for group {gid}: {ex}")
-            group_patterns[gid] = {d: [] for d in range(1, 8)}
-
-    tasks = [_fetch_group_weekly(g.group_id) for g in groups]
-    await asyncio.gather(*tasks)
+            logger.warning(f"Could not fetch weekly schedule for group {g.group_id}: {ex}")
+            group_patterns[g.group_id] = {d: [] for d in range(1, 8)}
+        await asyncio.sleep(0.04)
 
     clusters: Dict[str, List[int]] = {}
     cluster_sample_patterns: Dict[str, Dict[int, List[Dict[str, Any]]]] = {}

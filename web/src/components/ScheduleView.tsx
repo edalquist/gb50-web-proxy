@@ -21,7 +21,7 @@ import {
   ScheduleItem, 
   ScheduleProgram, 
   ScheduleEventInput, 
-  OperationMode
+  OperationMode 
 } from '../types';
 import { 
   fetchWeeklySchedule, 
@@ -46,13 +46,13 @@ interface ScheduleViewProps {
 export type ScheduleMode = 'programs' | 'planner' | 'matrix';
 
 const DAYS_OF_WEEK = [
+  { id: 7, label: 'Sunday', short: 'Sun', highlight: true },
   { id: 1, label: 'Monday', short: 'Mon' },
   { id: 2, label: 'Tuesday', short: 'Tue' },
-  { id: 3, label: 'Wednesday', short: 'Wed' },
+  { id: 3, label: 'Wednesday', short: 'Wed', highlight: true },
   { id: 4, label: 'Thursday', short: 'Thu' },
   { id: 5, label: 'Friday', short: 'Fri' },
   { id: 6, label: 'Saturday', short: 'Sat' },
-  { id: 7, label: 'Sunday', short: 'Sun', highlight: true },
 ];
 
 const COLOR_CLASSES: Record<string, { bg: string; text: string; border: string; badge: string }> = {
@@ -63,9 +63,22 @@ const COLOR_CLASSES: Record<string, { bg: string; text: string; border: string; 
   rose: { bg: 'bg-rose-500/10', text: 'text-rose-400', border: 'border-rose-500/30', badge: 'bg-rose-500 text-white' },
   cyan: { bg: 'bg-cyan-500/10', text: 'text-cyan-400', border: 'border-cyan-500/30', badge: 'bg-cyan-500 text-white' },
   indigo: { bg: 'bg-indigo-500/10', text: 'text-indigo-400', border: 'border-indigo-500/30', badge: 'bg-indigo-500 text-white' },
-  teal: { bg: 'bg-teal-500/10', text: 'text-teal-400', border: 'border-teal-500/30', badge: 'bg-teal-500 text-white' },
   slate: { bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/30', badge: 'bg-slate-600 text-slate-200' },
 };
+
+interface TimelineSpan {
+  startMin: number;
+  endMin: number;
+  startStr: string;
+  endStr: string;
+  drive: 'ON' | 'OFF';
+  mode?: OperationMode;
+  tempF?: number;
+  tempC?: number;
+  fanSpeed?: string;
+  airDirection?: string;
+  eventIndex?: number;
+}
 
 export const ScheduleView: React.FC<ScheduleViewProps> = ({
   groups,
@@ -108,7 +121,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const [programFormPattern, setProgramFormPattern] = useState<Record<number, any[]>>({
     1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: []
   });
-  const [programEditorDay, setProgramEditorDay] = useState<number>(1);
+  const [programEditorDay, setProgramEditorDay] = useState<number>(7);
 
   // --- Planner State ---
   const [selectedDay, setSelectedDay] = useState<number>(7); // Default Sunday
@@ -119,7 +132,19 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     groups.length > 0 ? groups[0].group_id : 1
   );
   const [weeklyPatterns, setWeeklyPatterns] = useState<Record<number, Record<number, ScheduleItem[]>>>({});
+  const [loadingSchedule, setLoadingSchedule] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [plannerSearch, setPlannerSearch] = useState('');
+
+  // Synchronize primaryGroupId when groups finish initial load
+  useEffect(() => {
+    if (groups.length > 0) {
+      if (!groups.some((g) => g.group_id === primaryGroupId)) {
+        setPrimaryGroupId(groups[0].group_id);
+        setSelectedGroupIds([groups[0].group_id]);
+      }
+    }
+  }, [groups]);
 
   // Event Edit Modal
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
@@ -162,6 +187,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   }, []);
 
   const loadWeeklyScheduleForGroup = async (groupId: number) => {
+    if (!groupId) return;
+    setLoadingSchedule(true);
     try {
       const data = await fetchWeeklySchedule(groupId);
       setWeeklyPatterns((prev) => ({
@@ -170,11 +197,15 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       }));
     } catch (err) {
       console.error(`Failed to load weekly schedule for group ${groupId}:`, err);
+    } finally {
+      setLoadingSchedule(false);
     }
   };
 
   useEffect(() => {
-    loadWeeklyScheduleForGroup(primaryGroupId);
+    if (primaryGroupId) {
+      loadWeeklyScheduleForGroup(primaryGroupId);
+    }
   }, [primaryGroupId]);
 
   const loadAllMatrixSchedules = async () => {
@@ -192,10 +223,74 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   }, [scheduleMode]);
 
   // Current day events for planner
-  const currentDayEvents: ScheduleItem[] = weeklyPatterns[primaryGroupId]?.[selectedDay] || [];
+  const currentDayEvents: ScheduleItem[] = useMemo(() => {
+    const groupSched = weeklyPatterns[primaryGroupId];
+    if (!groupSched) return [];
+    return groupSched[selectedDay] || groupSched[String(selectedDay) as any] || [];
+  }, [weeklyPatterns, primaryGroupId, selectedDay]);
 
   // Group lookup map
   const groupMap = useMemo(() => new Map(groups.map((g) => [g.group_id, g])), [groups]);
+
+  // Assigned program for current primary group
+  const currentAssignedProgram = useMemo(() => {
+    return programs.find((p) => p.assigned_group_ids.includes(primaryGroupId));
+  }, [programs, primaryGroupId]);
+
+  // Calculate 24-hour visual timeline spans for current day
+  const timelineSpans: TimelineSpan[] = useMemo(() => {
+    if (!currentDayEvents || currentDayEvents.length === 0) {
+      return [{
+        startMin: 0,
+        endMin: 1440,
+        startStr: '00:00',
+        endStr: '24:00',
+        drive: 'OFF',
+      }];
+    }
+
+    const sorted = [...currentDayEvents].sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
+    const spans: TimelineSpan[] = [];
+
+    // If first event is after 00:00, add leading OFF span
+    const firstMin = sorted[0].hour * 60 + sorted[0].minute;
+    if (firstMin > 0) {
+      spans.push({
+        startMin: 0,
+        endMin: firstMin,
+        startStr: '00:00',
+        endStr: sorted[0].time_str || `${String(sorted[0].hour).padStart(2, '0')}:${String(sorted[0].minute).padStart(2, '0')}`,
+        drive: 'OFF',
+      });
+    }
+
+    for (let i = 0; i < sorted.length; i++) {
+      const ev = sorted[i];
+      const startMin = ev.hour * 60 + ev.minute;
+      const nextMin = (i < sorted.length - 1) ? (sorted[i + 1].hour * 60 + sorted[i + 1].minute) : 1440;
+      
+      const startStr = ev.time_str || `${String(ev.hour).padStart(2, '0')}:${String(ev.minute).padStart(2, '0')}`;
+      const endStr = (i < sorted.length - 1)
+        ? (sorted[i + 1].time_str || `${String(sorted[i + 1].hour).padStart(2, '0')}:${String(sorted[i + 1].minute).padStart(2, '0')}`)
+        : '24:00';
+
+      spans.push({
+        startMin,
+        endMin: nextMin,
+        startStr,
+        endStr,
+        drive: ev.drive === 'OFF' ? 'OFF' : 'ON',
+        mode: ev.mode,
+        tempF: ev.set_temp_f || (ev.set_temp_c ? Math.round((ev.set_temp_c * 9/5) + 32) : 71),
+        tempC: ev.set_temp_c,
+        fanSpeed: ev.fan_speed,
+        airDirection: ev.air_direction,
+        eventIndex: i,
+      });
+    }
+
+    return spans;
+  }, [currentDayEvents]);
 
   // --- Program Action Handlers ---
   const handleOpenAssignModal = (prog: ScheduleProgram) => {
@@ -212,7 +307,6 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       setPrograms((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       setSelectedProgramForAssign(null);
       setStatusMsg(`Successfully assigned ${assignModalSelectedZones.length} zones to '${updated.name}' and flashed controller hardware.`);
-      // Refresh planner patterns
       for (const gid of assignModalSelectedZones) {
         loadWeeklyScheduleForGroup(gid);
       }
@@ -269,7 +363,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     setProgramFormDesc(prog.description);
     setProgramFormColor(prog.color || 'blue');
     setProgramFormPattern(JSON.parse(JSON.stringify(prog.weekly_pattern)));
-    setProgramEditorDay(1);
+    setProgramEditorDay(7);
     setIsCreateProgramOpen(true);
   };
 
@@ -279,7 +373,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     setProgramFormDesc('');
     setProgramFormColor('blue');
     setProgramFormPattern({ 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [] });
-    setProgramEditorDay(1);
+    setProgramEditorDay(7);
     setIsCreateProgramOpen(true);
   };
 
@@ -320,6 +414,14 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   };
 
   // --- Planner Action Handlers ---
+  const handleLoadProgramIntoPlanner = (prog: ScheduleProgram) => {
+    setWeeklyPatterns((prev) => ({
+      ...prev,
+      [primaryGroupId]: JSON.parse(JSON.stringify(prog.weekly_pattern)),
+    }));
+    setStatusMsg(`Loaded schedule pattern from program '${prog.name}'. Click 'Save Schedule to Controller' to flash.`);
+  };
+
   const handleSavePlannerToHardware = async () => {
     if (selectedGroupIds.length === 0) return;
     setIsSaving(true);
@@ -486,7 +588,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       return next;
     });
     setIsDuplicateModalOpen(false);
-    setStatusMsg(`Copied ${DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} schedule to ${duplicateTargetDays.length} day(s). Click 'Save to Controller' to flash.`);
+    setStatusMsg(`Copied ${DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} schedule to ${duplicateTargetDays.length} day(s). Click 'Save Schedule to Controller' to flash.`);
   };
 
   // Helper zone filters
@@ -512,6 +614,15 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     }
   };
 
+  // Filtered Zones for Planner
+  const filteredPlannerGroups = groups.filter((g) => {
+    if (plannerSearch) {
+      const q = plannerSearch.toLowerCase();
+      return g.name.toLowerCase().includes(q) || String(g.group_id).includes(q);
+    }
+    return true;
+  });
+
   // Matrix Filtered Groups
   const filteredMatrixGroups = groups.filter((g) => {
     if (matrixFilter === 'floor1' && !(g.floor === 1 || (!g.floor && ((g as { floor?: number }).floor ?? 1) === 1))) return false;
@@ -523,6 +634,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     }
     return true;
   });
+
+  const primaryGroup = groupMap.get(primaryGroupId);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 space-y-6">
@@ -656,7 +769,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       <div className="flex items-start justify-between gap-4 mb-3">
                         <div className="flex items-center gap-3">
                           <span className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${colorConfig.badge}`}>
-                            {prog.name.slice(0, 14)}
+                            {prog.name.slice(0, 16)}
                           </span>
                           {prog.sync_status === 'DRIFT_DETECTED' && (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
@@ -698,7 +811,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                         </div>
                         <div className="grid grid-cols-7 gap-1">
                           {DAYS_OF_WEEK.map((d) => {
-                            const dayEvents = prog.weekly_pattern[d.id] || [];
+                            const dayEvents = prog.weekly_pattern[d.id] || prog.weekly_pattern[String(d.id) as any] || [];
                             const hasEvents = dayEvents.length > 0;
                             const hasOn = dayEvents.some((e: any) => e.drive === 'ON');
 
@@ -841,50 +954,77 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               </button>
             </div>
 
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-500" />
+              <input
+                type="text"
+                placeholder="Filter zones..."
+                value={plannerSearch}
+                onChange={(e) => setPlannerSearch(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
             {/* Zone List */}
             <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
-              {groups.map((g) => {
+              {filteredPlannerGroups.map((g) => {
                 const isSelected = selectedGroupIds.includes(g.group_id);
                 const isPrimary = primaryGroupId === g.group_id;
+                const assignedProg = programs.find((p) => p.assigned_group_ids.includes(g.group_id));
 
                 return (
                   <div
                     key={g.group_id}
                     onClick={() => {
-                      if (selectedGroupIds.includes(g.group_id)) {
-                        if (selectedGroupIds.length > 1) {
-                          setSelectedGroupIds(selectedGroupIds.filter((id) => id !== g.group_id));
-                        }
-                      } else {
-                        setSelectedGroupIds([...selectedGroupIds, g.group_id]);
-                        setPrimaryGroupId(g.group_id);
+                      setPrimaryGroupId(g.group_id);
+                      if (!selectedGroupIds.includes(g.group_id)) {
+                        setSelectedGroupIds([g.group_id]);
                       }
                     }}
                     className={`p-2.5 rounded-xl border cursor-pointer transition flex items-center justify-between text-xs ${
-                      isSelected
-                        ? 'bg-blue-600/10 border-blue-500/40 text-slate-100'
+                      isPrimary
+                        ? 'bg-blue-600/15 border-blue-500 text-slate-100 shadow-sm'
+                        : isSelected
+                        ? 'bg-blue-600/5 border-blue-500/40 text-slate-200'
                         : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:border-slate-700'
                     }`}
                   >
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 overflow-hidden">
                       <input
                         type="checkbox"
                         checked={isSelected}
-                        onChange={() => {}}
-                        className="rounded border-slate-700 text-blue-600 focus:ring-0"
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          if (isSelected) {
+                            if (selectedGroupIds.length > 1) {
+                              setSelectedGroupIds(selectedGroupIds.filter((id) => id !== g.group_id));
+                            }
+                          } else {
+                            setSelectedGroupIds([...selectedGroupIds, g.group_id]);
+                          }
+                        }}
+                        className="rounded border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
                       />
-                      <div>
-                        <span className="font-semibold text-slate-200">
+                      <div className="truncate">
+                        <span className="font-semibold text-slate-200 block truncate">
                           Z{g.group_id}: {g.name}
                         </span>
-                        <span className="block text-[10px] text-slate-500">
-                          {g.model === 'LC' ? 'Lossnay HRU' : `Floor ${g.floor || 1}`}
-                        </span>
+                        <div className="flex items-center gap-1.5 text-[10px]">
+                          <span className="text-slate-500">
+                            {g.model === 'LC' ? 'Lossnay' : `Floor ${g.floor || 1}`}
+                          </span>
+                          {assignedProg && (
+                            <span className="text-blue-400 font-medium truncate">
+                              • {assignedProg.name}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     {isPrimary && (
-                      <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[10px] font-bold">
-                        Source
+                      <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[10px] font-bold shrink-0 ml-1">
+                        Active
                       </span>
                     )}
                   </div>
@@ -895,93 +1035,189 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
           {/* Right Column: 24-Hour Timeline Planner */}
           <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
-            {/* Day Selector Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800">
-              <div className="flex flex-wrap gap-1.5">
-                {DAYS_OF_WEEK.map((d) => (
+            {/* Header with Zone Info and Quick Program Loader */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <h2 className="text-lg font-bold text-slate-100">
+                    {primaryGroup ? `Zone ${primaryGroup.group_id}: ${primaryGroup.name}` : `Zone ${primaryGroupId}`}
+                  </h2>
+                  {currentAssignedProgram && (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${COLOR_CLASSES[currentAssignedProgram.color]?.badge || COLOR_CLASSES.blue.badge}`}>
+                      {currentAssignedProgram.name}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400">
+                  Targeting {selectedGroupIds.length} zone(s). Select a day to view and configure its 24-hour routine.
+                </p>
+              </div>
+
+              {/* Quick Load from Program Dropdown */}
+              {isOperatorOrAdmin && programs.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400 font-semibold">Load Template:</span>
+                  <select
+                    onChange={(e) => {
+                      const progId = parseInt(e.target.value, 10);
+                      const prog = programs.find((p) => p.id === progId);
+                      if (prog) handleLoadProgramIntoPlanner(prog);
+                    }}
+                    defaultValue=""
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="" disabled>Select Program...</option>
+                    {programs.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.weekly_hours} hrs/wk)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* 7-Day Selector Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-7 gap-2">
+              {DAYS_OF_WEEK.map((d) => {
+                const dayEvents = (weeklyPatterns[primaryGroupId]?.[d.id] || weeklyPatterns[primaryGroupId]?.[String(d.id) as any] || []);
+                const onEvent = dayEvents.find((e) => e.drive === 'ON');
+                const isSelectedDay = selectedDay === d.id;
+
+                return (
                   <button
                     key={d.id}
                     onClick={() => setSelectedDay(d.id)}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
-                      selectedDay === d.id
-                        ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
-                        : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                    className={`p-3 rounded-2xl font-bold text-xs text-center border transition ${
+                      isSelectedDay
+                        ? 'bg-blue-600 text-white border-blue-400 shadow-lg shadow-blue-900/40'
+                        : 'bg-slate-950 hover:bg-slate-800/80 text-slate-300 border-slate-800'
                     }`}
                   >
-                    {d.label}
-                    {d.highlight && <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"></span>}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex items-center gap-2">
-                {isOperatorOrAdmin && (
-                  <>
-                    <button
-                      onClick={() => {
-                        setDuplicateTargetDays(DAYS_OF_WEEK.filter((d) => d.id !== selectedDay).map((d) => d.id));
-                        setIsDuplicateModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition flex items-center gap-1.5"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      Copy Day
-                    </button>
-
-                    <button
-                      onClick={() => handleOpenEventModal('planner')}
-                      className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold shadow transition flex items-center gap-1.5"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      Add Event
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* 24-Hour Visual Timeline Bar */}
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
-              <div className="flex items-center justify-between text-xs text-slate-400">
-                <span className="font-semibold text-slate-300">24-Hour Daily Event Timeline</span>
-                <span className="font-mono">{currentDayEvents.length} / 16 Events</span>
-              </div>
-
-              {/* 24-Hour Grid Bar */}
-              <div className="relative h-12 bg-slate-900 rounded-lg border border-slate-800 overflow-hidden flex">
-                {/* 24 hour markers */}
-                {Array.from({ length: 24 }).map((_, h) => (
-                  <div key={h} className="flex-1 border-r border-slate-800/40 text-[9px] text-slate-600 pl-0.5 pt-0.5 font-mono select-none">
-                    {h % 3 === 0 ? `${h}` : ''}
-                  </div>
-                ))}
-
-                {/* Event Markers on Timeline */}
-                {currentDayEvents.map((ev, idx) => {
-                  const leftPercent = ((ev.hour * 60 + ev.minute) / (24 * 60)) * 100;
-                  const isOn = ev.drive === 'ON';
-                  return (
-                    <div
-                      key={idx}
-                      onClick={() => isOperatorOrAdmin && handleOpenEventModal('planner', idx)}
-                      style={{ left: `${leftPercent}%` }}
-                      className={`absolute top-1 bottom-1 w-3 -ml-1.5 rounded cursor-pointer transition shadow-md group flex items-center justify-center ${
-                        isOn ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
-                      }`}
-                      title={`${ev.time_str} - ${ev.drive} (${ev.mode || 'AUTO'})`}
-                    >
-                      <span className="text-[8px] font-bold">{idx + 1}</span>
+                    <div className="flex items-center justify-center gap-1 text-sm font-black">
+                      {d.short}
+                      {d.highlight && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"></span>}
                     </div>
-                  );
-                })}
+                    <div className={`text-[10px] font-mono mt-1 truncate ${isSelectedDay ? 'text-blue-100' : 'text-slate-500'}`}>
+                      {dayEvents.length > 0 ? (
+                        onEvent ? (
+                          `${onEvent.time_str} (${onEvent.set_temp_f ? `${onEvent.set_temp_f}°F` : onEvent.mode || 'ON'})`
+                        ) : `${dayEvents.length} Events`
+                      ) : (
+                        'Off / Standby'
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Visual 24-Hour Day Timeline */}
+            <div className="space-y-4 bg-slate-950 p-5 rounded-2xl border border-slate-800">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100">
+                    {DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} 24-Hour Visual Schedule
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Colored blocks indicate active HVAC conditioning. Slate blocks represent power OFF / unoccupied setback.
+                  </p>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-2">
+                  {isOperatorOrAdmin && (
+                    <>
+                      <button
+                        onClick={() => {
+                          setDuplicateTargetDays(DAYS_OF_WEEK.filter((d) => d.id !== selectedDay).map((d) => d.id));
+                          setIsDuplicateModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl text-slate-200 border border-slate-700 flex items-center gap-1.5 transition"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        Copy Day
+                      </button>
+
+                      <button
+                        onClick={() => handleOpenEventModal('planner')}
+                        className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded-xl text-white shadow flex items-center gap-1.5 transition"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add Event
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Timeline Container Bar */}
+              {loadingSchedule ? (
+                <div className="h-14 bg-slate-900 rounded-xl border border-slate-800 flex items-center justify-center text-xs text-slate-500 gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-blue-500" />
+                  Loading schedule from controller...
+                </div>
+              ) : (
+                <div className="relative h-14 bg-slate-900 rounded-xl overflow-hidden border border-slate-800 flex shadow-inner">
+                  {timelineSpans.map((span, idx) => {
+                    const widthPercent = ((span.endMin - span.startMin) / 1440) * 100;
+                    const isOn = span.drive === 'ON';
+
+                    return (
+                      <div
+                        key={idx}
+                        style={{ width: `${widthPercent}%` }}
+                        onClick={() => {
+                          if (span.eventIndex !== undefined && isOperatorOrAdmin) {
+                            handleOpenEventModal('planner', span.eventIndex);
+                          }
+                        }}
+                        className={`h-full flex flex-col items-center justify-center text-center p-1 transition border-r border-slate-800/80 cursor-pointer overflow-hidden ${
+                          isOn
+                            ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold hover:bg-emerald-500/30'
+                            : 'bg-slate-900/90 text-slate-500 font-mono hover:bg-slate-800/60'
+                        }`}
+                        title={`${span.startStr} - ${span.endStr}: ${span.drive}${isOn ? ` (${span.tempF}°F ${span.mode})` : ''}`}
+                      >
+                        <span className="text-xs truncate w-full">
+                          {isOn ? (
+                            `${span.startStr} ON → ${tempUnit === 'F' ? `${span.tempF}°F` : `${span.tempC}°C`}`
+                          ) : (
+                            widthPercent > 10 ? `${span.startStr} OFF` : 'OFF'
+                          )}
+                        </span>
+                        {isOn && widthPercent > 15 && (
+                          <span className="text-[10px] font-mono opacity-80 uppercase tracking-wider">
+                            {span.mode || 'AUTO'}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Time Markers (0 to 24) */}
+              <div className="flex justify-between text-[10px] font-mono text-slate-500 px-1 select-none">
+                <span>12 AM</span>
+                <span>3 AM</span>
+                <span>6 AM</span>
+                <span>9 AM</span>
+                <span>12 PM</span>
+                <span>3 PM</span>
+                <span>6 PM</span>
+                <span>9 PM</span>
+                <span>12 AM</span>
               </div>
             </div>
 
-            {/* Event List Table */}
+            {/* Scheduled Events List */}
             <div className="space-y-3">
-              <h3 className="text-sm font-bold text-slate-200">
-                Scheduled Timer Events ({currentDayEvents.length})
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-slate-200">
+                  {DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} Scheduled Events ({currentDayEvents.length} / 16)
+                </h3>
+              </div>
 
               {currentDayEvents.length === 0 ? (
                 <div className="bg-slate-950/60 p-8 rounded-xl border border-slate-800/80 text-center text-slate-500 text-sm">
@@ -996,73 +1232,83 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                  {currentDayEvents.map((ev, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs"
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="w-6 h-6 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center font-bold text-xs">
-                          {idx + 1}
-                        </span>
-                        <div className="font-mono text-sm font-bold text-slate-100">
-                          {ev.time_str}
-                        </div>
-                        <span className={`px-2 py-0.5 rounded font-bold uppercase ${
-                          ev.drive === 'ON' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
-                        }`}>
-                          {ev.drive}
-                        </span>
-                        {ev.drive === 'ON' && (
-                          <>
-                            <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded font-semibold">
-                              {ev.mode || 'AUTO'}
-                            </span>
-                            {ev.set_temp_f && (
-                              <span className="font-mono font-bold text-slate-200">
-                                {ev.set_temp_f}°F
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {currentDayEvents.map((ev, idx) => {
+                    const isOn = ev.drive === 'ON';
+                    return (
+                      <div
+                        key={idx}
+                        className={`bg-slate-950 p-4 rounded-xl border flex items-center justify-between text-xs transition ${
+                          isOn ? 'border-emerald-500/30' : 'border-slate-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={`px-2.5 py-1.5 rounded-lg font-mono font-bold text-xs ${
+                            isOn ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-300'
+                          }`}>
+                            {ev.time_str}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2 font-bold">
+                              <span className={isOn ? 'text-emerald-300' : 'text-slate-300'}>
+                                {isOn ? 'Start Climate Conditioning' : 'System Shutdown / Setback'}
                               </span>
+                              <span className={`px-1.5 py-0.2 rounded text-[10px] uppercase font-bold ${
+                                isOn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                              }`}>
+                                {ev.drive}
+                              </span>
+                            </div>
+                            {isOn && (
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                Mode: <strong className="text-slate-200">{ev.mode || 'AUTO'}</strong>
+                                {ev.set_temp_f && (
+                                  <> • Setpoint: <strong className="text-emerald-300 font-mono">{tempUnit === 'F' ? `${ev.set_temp_f}°F` : `${ev.set_temp_c}°C`}</strong></>
+                                )}
+                                {ev.fan_speed && <> • Fan: <strong className="text-slate-200">{ev.fan_speed}</strong></>}
+                              </p>
                             )}
-                          </>
+                          </div>
+                        </div>
+
+                        {isOperatorOrAdmin && (
+                          <div className="flex items-center gap-1.5 ml-2">
+                            <button
+                              onClick={() => handleOpenEventModal('planner', idx)}
+                              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-blue-400 transition"
+                              title="Edit Event"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteEvent('planner', idx)}
+                              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-red-400 transition"
+                              title="Delete Event"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         )}
                       </div>
-
-                      {isOperatorOrAdmin && (
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => handleOpenEventModal('planner', idx)}
-                            className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-blue-400 rounded-lg transition"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteEvent('planner', idx)}
-                            className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-red-400 rounded-lg transition"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
 
             {/* Bottom Save Action */}
             {isOperatorOrAdmin && (
-              <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
+              <div className="pt-4 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <span className="text-xs text-slate-400">
-                  Targeting <strong className="text-slate-200">{selectedGroupIds.length}</strong> zone(s).
+                  Will save <strong className="text-white">{DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} Schedule</strong> to <strong className="text-blue-400">{selectedGroupIds.length} selected zone(s)</strong> in controller EEPROM.
                 </span>
                 <button
                   onClick={handleSavePlannerToHardware}
                   disabled={isSaving || selectedGroupIds.length === 0}
-                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition flex items-center gap-2 disabled:opacity-50"
+                  className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   <Save className="w-4 h-4" />
-                  {isSaving ? 'Writing to EEPROM...' : 'Save Schedule to Controller'}
+                  {isSaving ? 'Writing to EEPROM...' : `Save ${DAYS_OF_WEEK.find(d => d.id === selectedDay)?.short} to ${selectedGroupIds.length} Zone(s)`}
                 </button>
               </div>
             )}
@@ -1177,7 +1423,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       </td>
 
                       {DAYS_OF_WEEK.map((d) => {
-                        const dayEvents = weeklyPatterns[g.group_id]?.[d.id] || [];
+                        const dayEvents = weeklyPatterns[g.group_id]?.[d.id] || weeklyPatterns[g.group_id]?.[String(d.id) as any] || [];
                         const onEvent = dayEvents.find((e) => e.drive === 'ON');
                         const offEvent = dayEvents.find((e) => e.drive === 'OFF');
 
@@ -1534,7 +1780,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   onChange={(e) => setEventForm({ ...eventForm, minute: parseInt(e.target.value, 10) })}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
                 >
-                  {[0, 10, 15, 20, 30, 40, 45, 50].map((m) => (
+                  {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55].map((m) => (
                     <option key={m} value={m}>
                       :{String(m).padStart(2, '0')}
                     </option>

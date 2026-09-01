@@ -217,16 +217,20 @@ async def sync_group_hardware(client: GB50Client, group_id: int) -> bool:
     merged_pattern, _warnings = merge_programs_for_group(program_ids)
 
     logger.info(f"Flashing merged schedule ({len(program_ids)} programs) to group {group_id} across all 7 days...")
-    for day in range(1, 8):
-        events = merged_pattern.get(day, [])
-        await client.set_weekly_schedule(
-            group_ids=[group_id],
-            day_of_week=day,
-            events=events,
-        )
-
-    schedule_db.set_sync_status(group_id, "SYNCED")
-    return True
+    try:
+        for day in range(1, 8):
+            events = merged_pattern.get(day, [])
+            await client.set_weekly_schedule(
+                group_ids=[group_id],
+                day_of_week=day,
+                events=events,
+            )
+        schedule_db.set_sync_status(group_id, "SYNCED")
+        return True
+    except Exception as ex:
+        logger.error(f"Failed to flash weekly schedule to group {group_id}: {ex}")
+        schedule_db.set_sync_status(group_id, "ERROR")
+        raise
 
 
 async def reconstruct_schedules_from_controller(

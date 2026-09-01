@@ -6,7 +6,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from gb50.models import (
     GroupStatus,
@@ -143,10 +143,10 @@ class ScheduleEventInput(BaseModel):
 
     def resolved_temp_c(self) -> Optional[float]:
         if self.set_temp_c is not None:
-            return round(self.set_temp_c * 2) / 2
+            return round(self.set_temp_c, 1)
         if self.set_temp_f is not None:
             raw_c = (self.set_temp_f - 32.0) * 5.0 / 9.0
-            return round(raw_c * 2) / 2
+            return round(raw_c, 1)
         return None
 
 
@@ -186,6 +186,17 @@ class CreateScheduleProgramRequest(BaseModel):
     weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None
     assigned_group_ids: Optional[List[int]] = Field(default_factory=list)
 
+    @field_validator("weekly_pattern")
+    @classmethod
+    def validate_pattern(cls, v):
+        if v is not None:
+            for day, events in v.items():
+                if not (1 <= int(day) <= 7):
+                    raise ValueError(f"Invalid day {day}: must be between 1 and 7")
+                if len(events) > 16:
+                    raise ValueError(f"Maximum 16 events allowed for day {day} (got {len(events)})")
+        return v
+
 
 class UpdateScheduleProgramRequest(BaseModel):
     """Payload to update an existing named schedule program."""
@@ -193,6 +204,17 @@ class UpdateScheduleProgramRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=200)
     color: Optional[str] = Field(None, max_length=20)
     weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None
+
+    @field_validator("weekly_pattern")
+    @classmethod
+    def validate_pattern(cls, v):
+        if v is not None:
+            for day, events in v.items():
+                if not (1 <= int(day) <= 7):
+                    raise ValueError(f"Invalid day {day}: must be between 1 and 7")
+                if len(events) > 16:
+                    raise ValueError(f"Maximum 16 events allowed for day {day} (got {len(events)})")
+        return v
 
 
 class AssignZonesRequest(BaseModel):
@@ -355,7 +377,10 @@ async def delete_proxy_user(
 # --- System & Group Routes ---
 
 @router.get("/system", response_model=SystemInfo, summary="Get Controller System Information")
-async def get_system_info(mgr: StateManager = Depends(get_state_mgr)) -> SystemInfo:
+async def get_system_info(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> SystemInfo:
     """Retrieve controller model, ROM version, IP, MAC address, and licensed features."""
     try:
         return await mgr.get_system_info()
@@ -382,7 +407,10 @@ async def update_system_info(
 
 
 @router.get("/groups", response_model=List[GroupStatus], summary="Get All HVAC Groups")
-async def get_all_groups(mgr: StateManager = Depends(get_state_mgr)) -> List[GroupStatus]:
+async def get_all_groups(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> List[GroupStatus]:
     """Retrieve real-time telemetry, mode, temperature, and flags for all HVAC groups."""
     try:
         return await mgr.get_all_groups()
@@ -391,8 +419,26 @@ async def get_all_groups(mgr: StateManager = Depends(get_state_mgr)) -> List[Gro
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.get("/groups/{group_id}", response_model=GroupStatus, summary="Get Single HVAC Group")
-async def get_group(group_id: int, mgr: StateManager = Depends(get_state_mgr)) -> GroupStatus:
+@router.post("/groups/batch", response_model=List[GroupStatus], summary="Batch Control Multiple Groups")
+async def batch_control_groups(
+    request: BatchControlRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _user: Dict[str, Any] = Depends(require_role("operator")),
+) -> List[GroupStatus]:
+    """Control multiple HVAC groups simultaneously in a single transaction."""
+    try:
+        return await mgr.control_groups_batch(request.groups)
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/groups/batch: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.get("/groups/{group_id:int}", response_model=GroupStatus, summary="Get Single HVAC Group")
+async def get_group(
+    group_id: int,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> GroupStatus:
     """Retrieve real-time telemetry for a specific HVAC group by ID (1..50)."""
     try:
         group = await mgr.get_group(group_id)
@@ -406,7 +452,7 @@ async def get_group(group_id: int, mgr: StateManager = Depends(get_state_mgr)) -
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.post("/groups/{group_id}", response_model=GroupStatus, summary="Control HVAC Group")
+@router.post("/groups/{group_id:int}", response_model=GroupStatus, summary="Control HVAC Group")
 async def control_group(
     group_id: int,
     request: GroupControlRequest,
@@ -424,7 +470,7 @@ async def control_group(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.put("/groups/{group_id}/name", response_model=GroupStatus, summary="Rename HVAC Group")
+@router.put("/groups/{group_id:int}/name", response_model=GroupStatus, summary="Rename HVAC Group")
 async def rename_group(
     group_id: int,
     request: RenameGroupRequest,
@@ -474,7 +520,7 @@ async def create_group(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.put("/groups/{group_id}/config", summary="Configure Group Hardware Mapping")
+@router.put("/groups/{group_id:int}/config", summary="Configure Group Hardware Mapping")
 async def configure_group_hardware(
     group_id: int,
     request: UpdateGroupConfigRequest,
@@ -499,7 +545,7 @@ async def configure_group_hardware(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.delete("/groups/{group_id}", summary="Delete HVAC Group")
+@router.delete("/groups/{group_id:int}", summary="Delete HVAC Group")
 async def delete_group(
     group_id: int,
     mgr: StateManager = Depends(get_state_mgr),
@@ -518,6 +564,7 @@ async def delete_group(
 @router.get("/unassigned-addresses", summary="List Unassigned M-NET Addresses")
 async def get_unassigned_addresses(
     mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
 ) -> Dict[str, Any]:
     """Compute and list available M-NET addresses (1..50) that are not assigned to any group."""
     try:
@@ -541,7 +588,7 @@ async def get_unassigned_addresses(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.post("/groups/{group_id}/reset-filter", response_model=GroupStatus, summary="Reset Air Filter Sign")
+@router.post("/groups/{group_id:int}/reset-filter", response_model=GroupStatus, summary="Reset Air Filter Sign")
 async def reset_filter(
     group_id: int, 
     mgr: StateManager = Depends(get_state_mgr),
@@ -552,20 +599,6 @@ async def reset_filter(
         return await mgr.reset_filter(group_id)
     except Exception as ex:
         logger.exception("Error in POST /api/v1/groups/%s/reset-filter: %s", group_id, ex)
-        raise HTTPException(status_code=500, detail=str(ex))
-
-
-@router.post("/groups/batch", response_model=List[GroupStatus], summary="Batch Control Multiple Groups")
-async def batch_control_groups(
-    request: BatchControlRequest,
-    mgr: StateManager = Depends(get_state_mgr),
-    _user: Dict[str, Any] = Depends(require_role("operator")),
-) -> List[GroupStatus]:
-    """Control multiple HVAC groups simultaneously in a single transaction."""
-    try:
-        return await mgr.control_groups_batch(request.groups)
-    except Exception as ex:
-        logger.exception("Error in POST /api/v1/groups/batch: %s", ex)
         raise HTTPException(status_code=500, detail=str(ex))
 
 
@@ -589,7 +622,10 @@ async def apply_preset(
 # --- Interlocks, Schedules, Alarms, Clock, SummerTime, Setback ---
 
 @router.get("/interlocks", summary="Get LOSSNAY Interlocks")
-async def get_interlocks(mgr: StateManager = Depends(get_state_mgr)) -> List[Dict[str, int]]:
+async def get_interlocks(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> List[Dict[str, int]]:
     """Retrieve all configured Indoor Unit -> LOSSNAY ventilation pairings."""
     try:
         return await mgr.client.get_interlocks()
@@ -619,6 +655,7 @@ async def update_interlocks(
 @router.get("/schedules/programs", summary="List All Named Schedule Programs")
 async def list_schedule_programs(
     mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
 ) -> List[Dict[str, Any]]:
     """Retrieve all named schedule programs, assigned zones, and sync status."""
     try:
@@ -843,7 +880,10 @@ async def reconstruct_schedules_route(
 
 
 @router.get("/schedules", summary="Get All Groups Today Schedules")
-async def get_all_schedules(mgr: StateManager = Depends(get_state_mgr)) -> Dict[int, List[ScheduleItem]]:
+async def get_all_schedules(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[int, List[ScheduleItem]]:
     """Retrieve today's programmed timer events across all configured groups simultaneously."""
     try:
         return await mgr.client.get_all_today_schedules()
@@ -912,8 +952,12 @@ async def update_weekly_schedule(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.get("/schedules/{group_id}", response_model=List[ScheduleItem], summary="Get Group Today Schedule")
-async def get_schedule(group_id: int, mgr: StateManager = Depends(get_state_mgr)) -> List[ScheduleItem]:
+@router.get("/schedules/{group_id:int}", response_model=List[ScheduleItem], summary="Get Group Today Schedule")
+async def get_schedule(
+    group_id: int,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> List[ScheduleItem]:
     """Retrieve today's programmed timer events for a specific group."""
     try:
         return await mgr.get_schedule(group_id)
@@ -922,11 +966,12 @@ async def get_schedule(group_id: int, mgr: StateManager = Depends(get_state_mgr)
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.get("/schedules/{group_id}/weekly", summary="Get Group Weekly Schedule Patterns")
+@router.get("/schedules/{group_id:int}/weekly", summary="Get Group Weekly Schedule Patterns")
 async def get_weekly_schedule(
     group_id: int,
     season: int = 1,
     mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
 ) -> Dict[int, List[ScheduleItem]]:
     """Retrieve full 7-day weekly schedule patterns for a group (day 1=Monday .. 7=Sunday)."""
     try:
@@ -940,6 +985,7 @@ async def get_weekly_schedule(
 async def get_alarms(
     priority_level: Optional[int] = None,
     mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
 ) -> List[AlarmRecord]:
     """Retrieve unit malfunction alarms, communication logs, and full Mitsubishi diagnostics."""
     try:
@@ -965,7 +1011,10 @@ async def clear_alarms(
 
 
 @router.get("/clock", summary="Get Controller Clock")
-async def get_clock(mgr: StateManager = Depends(get_state_mgr)) -> Dict[str, Any]:
+async def get_clock(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[str, Any]:
     """Get controller real-time clock timestamp."""
     try:
         dt = await mgr.client.get_datetime()
@@ -991,7 +1040,10 @@ async def sync_clock(
 
 
 @router.get("/clock/summertime", summary="Get Summer Time Settings")
-async def get_summertime(mgr: StateManager = Depends(get_state_mgr)) -> Dict[str, Any]:
+async def get_summertime(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[str, Any]:
     """Get Daylight Saving Time (Summer Time) configuration."""
     try:
         return await mgr.client.get_summertime()
@@ -1016,7 +1068,10 @@ async def update_summertime(
 
 
 @router.get("/setback", summary="Get Night Setback Settings")
-async def get_setback(mgr: StateManager = Depends(get_state_mgr)) -> Dict[str, Any]:
+async def get_setback(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[str, Any]:
     """Get Night Setback schedule and drift temperature thresholds."""
     try:
         return await mgr.client.get_setback()
@@ -1068,12 +1123,12 @@ async def get_controller_users(
     mgr: StateManager = Depends(get_state_mgr),
     _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> List[Dict[str, Any]]:
-    """Retrieve user accounts and decrypted passwords stored directly on controller hardware."""
+    """Retrieve user accounts stored directly on controller hardware (passwords omitted)."""
     try:
         users = []
         for cat in ["Administrator", "Maintenance", "PublicUser"]:
             try:
-                cat_users = await mgr.client.get_users(cat)
+                cat_users = await mgr.client.get_users(cat, include_passwords=False)
                 users.extend(cat_users)
             except Exception as uex:
                 logger.debug("Could not fetch user category %s: %s", cat, uex)
@@ -1118,6 +1173,13 @@ async def websocket_endpoint(
     payload = decode_access_token(auth_token) if auth_token else None
     if not payload:
         logger.warning("Rejecting unauthenticated WebSocket connection attempt from %s", websocket.client)
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    user_id = int(payload.get("sub", 0))
+    user = user_db.get_user_by_id(user_id)
+    if not user or not user.get("enabled", 1) or payload.get("token_ver") != user.get("token_version", 1):
+        logger.warning("Rejecting invalid/revoked user WebSocket connection attempt: user_id=%s", user_id)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 

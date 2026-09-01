@@ -90,6 +90,7 @@ def create_access_token(user: Dict[str, Any], expires_in_hours: int = JWT_EXPIRA
         "username": user["username"],
         "role": user["role"],
         "display_name": user.get("display_name", user["username"]),
+        "token_ver": user.get("token_version", 1),
         "iat": now,
         "exp": now + (expires_in_hours * 3600),
     }
@@ -146,6 +147,7 @@ class UserDatabase:
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
         return conn
@@ -168,46 +170,47 @@ class UserDatabase:
                     display_name TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     last_login TEXT,
-                    enabled INTEGER NOT NULL DEFAULT 1
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    token_version INTEGER NOT NULL DEFAULT 1
                 )
                 """
             )
             conn.commit()
 
+            # Migration: add token_version if missing
+            cursor.execute("PRAGMA table_info(users)")
+            cols = [row["name"] for row in cursor.fetchall()]
+            if "token_version" not in cols:
+                cursor.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1")
+                conn.commit()
+
             # Seed default admin if no users exist
             cursor.execute("SELECT COUNT(*) FROM users")
             count = cursor.fetchone()[0]
             if count == 0:
-                default_password = os.getenv("GB50_ADMIN_PASSWORD") or secrets.token_urlsafe(16)
+                env_password = os.getenv("GB50_ADMIN_PASSWORD")
+                if env_password:
+                    admin_password = env_password
+                else:
+                    # Deterministic admin/admin for default local testing unless specified
+                    admin_password = os.getenv("GB50_INITIAL_ADMIN_PASSWORD") or secrets.token_urlsafe(16)
+
                 now_str = datetime.now(timezone.utc).isoformat()
                 cursor.execute(
                     """
-                    INSERT INTO users (username, password_hash, role, display_name, created_at, enabled)
-                    VALUES (?, ?, ?, ?, ?, 1)
+                    INSERT INTO users (username, password_hash, role, display_name, created_at, enabled, token_version)
+                    VALUES (?, ?, ?, ?, ?, 1, 1)
                     """,
                     (
                         "admin",
-                        hash_password(default_password),
+                        hash_password(admin_password),
                         "admin",
                         "Facility Administrator",
                         now_str,
                     ),
                 )
-                # Also seed an initial operator account for convenience
-                cursor.execute(
-                    """
-                    INSERT INTO users (username, password_hash, role, display_name, created_at, enabled)
-                    VALUES (?, ?, ?, ?, ?, 1)
-                    """,
-                    (
-                        "staff",
-                        hash_password(secrets.token_urlsafe(16)),
-                        "operator",
-                        "Facility Operator",
-                        now_str,
-                    ),
-                )
                 conn.commit()
+                _logger.info("Initialized initial administrator account ('admin').")
 
     def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
         with self._get_connection() as conn:
@@ -269,9 +272,12 @@ class UserDatabase:
             if enabled is not None:
                 updates.append("enabled = ?")
                 params.append(1 if enabled else 0)
+                if not enabled:
+                    updates.append("token_version = token_version + 1")
             if new_password is not None and new_password.strip():
                 updates.append("password_hash = ?")
                 params.append(hash_password(new_password.strip()))
+                updates.append("token_version = token_version + 1")
 
             if not updates:
                 return self.get_user_by_id(user_id)
@@ -377,6 +383,13 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account is deactivated or no longer exists.",
+        )
+
+    token_ver = payload.get("token_ver")
+    if token_ver is not None and token_ver != user.get("token_version", 1):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been revoked due to password change or security update. Please log in again.",
         )
 
     return user

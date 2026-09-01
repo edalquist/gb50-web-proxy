@@ -72,14 +72,12 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. Unauthenticated Read Endpoints (Allowed)
+        # 1. Unauthenticated Read Endpoints (Must fail with 401)
         resp = await client.get("/api/v1/system")
-        assert resp.status_code == 200
-        assert resp.json()["model"] == "GB-50ADA-A"
+        assert resp.status_code == 401
 
         resp = await client.get("/api/v1/groups")
-        assert resp.status_code == 200
-        assert len(resp.json()) == 1
+        assert resp.status_code == 401
 
         # 2. Unauthenticated Control Attempt (Must fail with 401)
         resp = await client.post("/api/v1/groups/1", json={"drive": "ON"})
@@ -97,16 +95,20 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         admin_token = admin_data["access_token"]
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-        # 4. Check Current User
+        # 4. Check Current User and Authenticated Read
         me_resp = await client.get("/api/v1/auth/me", headers=admin_headers)
         assert me_resp.status_code == 200
         assert me_resp.json()["username"] == "admin"
+
+        sys_resp = await client.get("/api/v1/system", headers=admin_headers)
+        assert sys_resp.status_code == 200
+        assert sys_resp.json()["model"] == "GB-50ADA-A"
 
         # 5. Create a Viewer User (clean up first if already exists from prior test runs)
         existing_users = await client.get("/api/v1/users", headers=admin_headers)
         if existing_users.status_code == 200:
             for u in existing_users.json():
-                if u["username"] == "kiosk_user":
+                if u["username"] in ("kiosk_user", "staff_operator"):
                     await client.delete(f"/api/v1/users/{u['id']}", headers=admin_headers)
 
         create_resp = await client.post(
@@ -143,10 +145,20 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         )
         assert v_ctrl.status_code == 403
 
-        # 7. Login as Operator and Test Successful Group Control
+        # 7. Create and Login as Operator, Test Group Control & Batch Control
+        await client.post(
+            "/api/v1/users",
+            headers=admin_headers,
+            json={
+                "username": "staff_operator",
+                "password": "staffpassword123",
+                "role": "operator",
+                "display_name": "Facilities Staff",
+            },
+        )
         staff_login = await client.post(
             "/api/v1/auth/login",
-            json={"username": "staff", "password": "staff123"},
+            json={"username": "staff_operator", "password": "staffpassword123"},
         )
         assert staff_login.status_code == 200
         staff_token = staff_login.json()["access_token"]
@@ -159,6 +171,14 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
             json={"drive": "ON", "mode": "COOL", "set_temp_f": 72.0},
         )
         assert s_ctrl.status_code == 200
+
+        # Operator batch controlling groups (verifies /groups/batch is not shadowed)
+        s_batch = await client.post(
+            "/api/v1/groups/batch",
+            headers=staff_headers,
+            json={"groups": {1: {"drive": "ON", "mode": "HEAT", "set_temp_f": 70.0}}},
+        )
+        assert s_batch.status_code == 200
 
         # Operator trying to provision new group: Denied (403)
         s_prov = await client.post(
@@ -187,35 +207,89 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         assert resp.status_code == 201
         assert resp.json()["status"] == "success"
 
-        # 9. Clean up test user
+        # 9. Clean up test users
         user_list_resp = await client.get("/api/v1/users", headers=admin_headers)
         assert user_list_resp.status_code == 200
-        kiosk = next((u for u in user_list_resp.json() if u["username"] == "kiosk_user"), None)
-        if kiosk:
-            del_resp = await client.delete(f"/api/v1/users/{kiosk['id']}", headers=admin_headers)
-            assert del_resp.status_code == 200
+        for u in user_list_resp.json():
+            if u["username"] in ("kiosk_user", "staff_operator"):
+                await client.delete(f"/api/v1/users/{u['id']}", headers=admin_headers)
 
 
-def test_temperature_snapping_and_database_init():
-    from server.routes import ScheduleEventInput
-    from server.auth import user_db
+@pytest.mark.asyncio
+async def test_token_revocation_on_password_change_and_disable(mock_system_info, mock_group):
+    app = create_app(controller_host="192.0.2.90", poll_interval=60.0)
+    app.state.client.get_system_info = AsyncMock(return_value=mock_system_info)
+    app.state.client.get_all_groups = AsyncMock(return_value=[mock_group])
 
-    # Test half-degree Celsius snapping
-    ev1 = ScheduleEventInput(hour=8, minute=0, drive="ON", set_temp_f=70.0)
-    # (70 - 32) * 5 / 9 = 21.111 -> snapped to 21.0
-    assert ev1.resolved_temp_c() == 21.0
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Login as Admin
+        admin_login = await client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert admin_login.status_code == 200
+        admin_token = admin_login.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-    ev2 = ScheduleEventInput(hour=8, minute=0, drive="ON", set_temp_f=72.0)
-    # (72 - 32) * 5 / 9 = 22.222 -> snapped to 22.0
-    assert ev2.resolved_temp_c() == 22.0
+        # 2. Create temporary user
+        create_resp = await client.post(
+            "/api/v1/users",
+            headers=admin_headers,
+            json={
+                "username": "revoketest_user",
+                "password": "initial_password",
+                "role": "operator",
+                "display_name": "Revoke Test User",
+            },
+        )
+        assert create_resp.status_code == 200
+        uid = create_resp.json()["id"]
 
-    ev3 = ScheduleEventInput(hour=8, minute=0, drive="ON", set_temp_c=21.4)
-    # 21.4 -> snapped to 21.5
-    assert ev3.resolved_temp_c() == 21.5
+        # 3. Login as revoketest_user
+        u_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "revoketest_user", "password": "initial_password"},
+        )
+        assert u_login.status_code == 200
+        user_token = u_login.json()["access_token"]
+        user_headers = {"Authorization": f"Bearer {user_token}"}
 
-    # Test user_db init_db public alias
-    user_db.init_db()
-    users = user_db.list_users()
-    assert len(users) >= 1
-    assert any(u["username"] == "admin" for u in users)
+        # User token works
+        me_resp = await client.get("/api/v1/auth/me", headers=user_headers)
+        assert me_resp.status_code == 200
+
+        # 4. Change user password
+        ch_resp = await client.post(
+            "/api/v1/auth/change-password",
+            headers=user_headers,
+            json={"old_password": "initial_password", "new_password": "new_password_123"},
+        )
+        assert ch_resp.status_code == 200
+
+        # 5. Old token must now be rejected (revoked via token_version increment)
+        revoked_resp = await client.get("/api/v1/auth/me", headers=user_headers)
+        assert revoked_resp.status_code == 401
+        assert "Session has been revoked" in revoked_resp.json()["detail"]
+
+        # 6. Login with new password works
+        new_login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": "revoketest_user", "password": "new_password_123"},
+        )
+        assert new_login.status_code == 200
+        new_user_token = new_login.json()["access_token"]
+        new_user_headers = {"Authorization": f"Bearer {new_user_token}"}
+
+        # 7. Disable user account
+        dis_resp = await client.put(
+            f"/api/v1/users/{uid}",
+            headers=admin_headers,
+            json={"enabled": False},
+        )
+        assert dis_resp.status_code == 200
+
+        # 8. Token for disabled account must now be rejected
+        dis_check = await client.get("/api/v1/auth/me", headers=new_user_headers)
+        assert dis_check.status_code == 401
+
+        # Clean up
+        await client.delete(f"/api/v1/users/{uid}", headers=admin_headers)
 

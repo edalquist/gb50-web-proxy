@@ -38,6 +38,7 @@ class ScheduleDatabase:
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON;")
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
         return conn
@@ -74,7 +75,7 @@ class ScheduleDatabase:
                             group_id INTEGER NOT NULL,
                             schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
                             synced_at TEXT NOT NULL,
-                            sync_status TEXT NOT NULL DEFAULT 'SYNCED',
+                            sync_status TEXT NOT NULL DEFAULT 'PENDING',
                             PRIMARY KEY (group_id, schedule_id)
                         )
                         """
@@ -93,7 +94,7 @@ class ScheduleDatabase:
                         group_id INTEGER NOT NULL,
                         schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
                         synced_at TEXT NOT NULL,
-                        sync_status TEXT NOT NULL DEFAULT 'SYNCED',
+                        sync_status TEXT NOT NULL DEFAULT 'PENDING',
                         PRIMARY KEY (group_id, schedule_id)
                     )
                     """
@@ -225,7 +226,7 @@ class ScheduleDatabase:
                     cursor.execute(
                         """
                         INSERT OR REPLACE INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
-                        VALUES (?, ?, ?, 'SYNCED')
+                        VALUES (?, ?, ?, 'PENDING')
                         """,
                         (gid, schedule_id, now_str),
                     )
@@ -272,7 +273,7 @@ class ScheduleDatabase:
             cursor = conn.cursor()
             cursor.execute(f"UPDATE schedules SET {', '.join(updates)} WHERE id = ?", params)
             cursor.execute(
-                "UPDATE schedule_assignments SET sync_status = 'SYNCED', synced_at = ? WHERE schedule_id = ?",
+                "UPDATE schedule_assignments SET sync_status = 'PENDING', synced_at = ? WHERE schedule_id = ?",
                 (now_str, schedule_id),
             )
             conn.commit()
@@ -299,7 +300,7 @@ class ScheduleDatabase:
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
-                    VALUES (?, ?, ?, 'SYNCED')
+                    VALUES (?, ?, ?, 'PENDING')
                     """,
                     (gid, schedule_id, now_str),
                 )
@@ -359,7 +360,7 @@ class ScheduleDatabase:
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
-                    VALUES (?, ?, ?, 'SYNCED')
+                    VALUES (?, ?, ?, 'PENDING')
                     """,
                     (group_id, pid, now_str),
                 )

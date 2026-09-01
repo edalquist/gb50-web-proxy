@@ -343,3 +343,49 @@ def test_merge_programs_engine(temp_db):
     finally:
         sync_module.schedule_db = old_db
 
+
+@pytest.mark.asyncio
+async def test_schedule_sync_status_lifecycle_and_foreign_keys(temp_db):
+    from server.schedule_sync import sync_group_hardware
+    import server.schedule_sync as sync_module
+
+    old_db = sync_module.schedule_db
+    sync_module.schedule_db = temp_db
+
+    try:
+        # 1. Create program with assigned zone
+        prog = temp_db.create_schedule(
+            name="Sanctuary Weekly",
+            weekly_pattern={1: [{"hour": 9, "minute": 0, "drive": "ON", "set_temp_f": 70.0}]},
+            assigned_group_ids=[1],
+        )
+        # Initial status MUST be PENDING
+        progs = temp_db.get_programs_for_group(1)
+        assert len(progs) == 1
+        assert progs[0]["sync_status"] == "PENDING"
+
+        # 2. Hardware sync failure should mark status as ERROR
+        mock_failing_client = AsyncMock()
+        mock_failing_client.set_weekly_schedule.side_effect = Exception("Controller timeout")
+        with pytest.raises(Exception, match="Controller timeout"):
+            await sync_group_hardware(mock_failing_client, group_id=1)
+
+        progs_after_fail = temp_db.get_programs_for_group(1)
+        assert progs_after_fail[0]["sync_status"] == "ERROR"
+
+        # 3. Successful hardware sync should mark status as SYNCED
+        mock_success_client = AsyncMock()
+        mock_success_client.set_weekly_schedule.return_value = True
+        await sync_group_hardware(mock_success_client, group_id=1)
+
+        progs_after_success = temp_db.get_programs_for_group(1)
+        assert progs_after_success[0]["sync_status"] == "SYNCED"
+
+        # 4. Test Foreign Key Cascades: Deleting program removes assignments
+        temp_db.delete_schedule(prog["id"])
+        assignments = temp_db.get_program_ids_for_group(1)
+        assert len(assignments) == 0
+    finally:
+        sync_module.schedule_db = old_db
+
+

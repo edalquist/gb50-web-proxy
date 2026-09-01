@@ -38,6 +38,7 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
 }) => {
   const { user } = useAuth();
   const isViewer = user?.role === 'viewer';
+  const isAdmin = user?.role === 'admin';
   if (!group) return null;
 
   const [drive, setDrive] = useState<DriveState>(group.drive);
@@ -128,7 +129,7 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
             ) : (
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold text-slate-100">{group.name}</h2>
-                {!isViewer && (
+                {isAdmin && (
                   <button
                     onClick={() => setIsEditingName(true)}
                     className="p-1 text-slate-400 hover:text-blue-400 transition"

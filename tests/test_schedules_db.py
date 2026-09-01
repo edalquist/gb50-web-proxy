@@ -236,9 +236,110 @@ async def test_rest_api_programs_endpoints():
         assert push_resp.status_code == 200
         assert push_resp.json()["status"] == "success"
 
-        # 5. Delete program
-        del_resp = await client.delete(
-            f"/api/v1/schedules/programs/{created['id']}",
+        # 5. Multi-program assignment to Zone 1
+        prog_sun = await client.post(
+            "/api/v1/schedules/programs",
             headers=headers,
+            json={
+                "name": "Sunday Service",
+                "description": "Sun 7am-1pm",
+                "color": "emerald",
+                "weekly_pattern": {
+                    "7": [{"hour": 7, "minute": 0, "drive": "ON", "set_temp_f": 70.0}]
+                },
+                "assigned_group_ids": [],
+            },
         )
-        assert del_resp.status_code == 200
+        prog_wed = await client.post(
+            "/api/v1/schedules/programs",
+            headers=headers,
+            json={
+                "name": "Wednesday Youth",
+                "description": "Wed 5:30pm-8:30pm",
+                "color": "purple",
+                "weekly_pattern": {
+                    "3": [{"hour": 17, "minute": 30, "drive": "ON", "set_temp_f": 71.0}]
+                },
+                "assigned_group_ids": [],
+            },
+        )
+        sun_id = prog_sun.json()["id"]
+        wed_id = prog_wed.json()["id"]
+
+        # Assign both programs to Zone 1
+        zone_assign = await client.put(
+            "/api/v1/schedules/zones/1/programs",
+            headers=headers,
+            json={"program_ids": [sun_id, wed_id]},
+        )
+        assert zone_assign.status_code == 200
+        assigned_data = zone_assign.json()
+        assert len(assigned_data["assigned_programs"]) == 2
+
+        # Get zone programs
+        zone_progs = await client.get("/api/v1/schedules/zones/1/programs", headers=headers)
+        assert zone_progs.status_code == 200
+        assert len(zone_progs.json()) == 2
+
+        # Get merged schedule for Zone 1
+        merged_res = await client.get("/api/v1/schedules/zones/1/merged", headers=headers)
+        assert merged_res.status_code == 200
+        merged_pattern = merged_res.json()["merged_pattern"]
+        assert len(merged_pattern["7"]) == 1
+        assert merged_pattern["7"][0]["source_program_name"] == "Sunday Service"
+        assert len(merged_pattern["3"]) == 1
+        assert merged_pattern["3"][0]["source_program_name"] == "Wednesday Youth"
+
+        # Check assignments map
+        all_assign = await client.get("/api/v1/schedules/assignments", headers=headers)
+        assert all_assign.status_code == 200
+        assert 1 in all_assign.json() or "1" in all_assign.json()
+
+        # Clean up
+        await client.delete(f"/api/v1/schedules/programs/{sun_id}", headers=headers)
+        await client.delete(f"/api/v1/schedules/programs/{wed_id}", headers=headers)
+        await client.delete(f"/api/v1/schedules/programs/{created['id']}", headers=headers)
+
+
+def test_merge_programs_engine(temp_db):
+    from server.schedule_sync import merge_programs_for_group
+
+    p1 = temp_db.create_schedule(
+        name="Morning Warmup",
+        weekly_pattern={
+            1: [{"hour": 6, "minute": 0, "drive": "ON", "set_temp_f": 70.0}],
+            2: [{"hour": 6, "minute": 0, "drive": "ON", "set_temp_f": 70.0}],
+        }
+    )
+    p2 = temp_db.create_schedule(
+        name="Evening Youth",
+        weekly_pattern={
+            1: [{"hour": 18, "minute": 0, "drive": "ON", "set_temp_f": 72.0}, {"hour": 21, "minute": 0, "drive": "OFF"}],
+            3: [{"hour": 18, "minute": 0, "drive": "ON", "set_temp_f": 72.0}],
+        }
+    )
+
+    # Monkeypatch schedule_db for unit test
+    import server.schedule_sync as sync_module
+    old_db = sync_module.schedule_db
+    sync_module.schedule_db = temp_db
+    try:
+        merged, warnings = merge_programs_for_group([p1["id"], p2["id"]])
+        assert len(warnings) == 0
+        # Day 1 should have 3 events: 06:00, 18:00, 21:00
+        assert len(merged[1]) == 3
+        assert merged[1][0]["time_str"] == "06:00"
+        assert merged[1][0]["source_program_name"] == "Morning Warmup"
+        assert merged[1][1]["time_str"] == "18:00"
+        assert merged[1][1]["source_program_name"] == "Evening Youth"
+        assert merged[1][2]["time_str"] == "21:00"
+
+        # Day 2 should have 1 event (06:00)
+        assert len(merged[2]) == 1
+        # Day 3 should have 1 event (18:00)
+        assert len(merged[3]) == 1
+        # Day 4..7 should be empty
+        assert len(merged[4]) == 0
+    finally:
+        sync_module.schedule_db = old_db
+

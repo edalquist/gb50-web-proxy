@@ -37,6 +37,8 @@ from .schedule_sync import (
     push_schedule_to_hardware,
     check_schedule_drift,
     calculate_weekly_runtime_hours,
+    merge_programs_for_group,
+    sync_group_hardware,
 )
 
 logger = logging.getLogger("gb50.api")
@@ -196,6 +198,11 @@ class UpdateScheduleProgramRequest(BaseModel):
 class AssignZonesRequest(BaseModel):
     """Payload to assign HVAC zones to a schedule program."""
     group_ids: List[int] = Field(default_factory=list)
+
+
+class AssignProgramsToZoneRequest(BaseModel):
+    """Payload to assign multiple schedule programs to a single HVAC zone."""
+    program_ids: List[int] = Field(default_factory=list)
 
 
 # --- Authentication Endpoints ---
@@ -754,6 +761,69 @@ async def push_program_hardware_route(
     except Exception as ex:
         logger.exception("Error in POST /api/v1/schedules/programs/%s/push-to-hardware: %s", program_id, ex)
         raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.get("/schedules/assignments", summary="Get All Zone Schedule Program Assignments")
+async def get_all_zone_assignments(
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[int, List[int]]:
+    """Retrieve full mapping of zone group_id to list of assigned schedule program IDs."""
+    return schedule_db.get_all_group_program_assignments()
+
+
+@router.get("/schedules/zones/{group_id}/programs", summary="Get Assigned Programs for a Zone")
+async def get_zone_programs(
+    group_id: int,
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> List[Dict[str, Any]]:
+    """Retrieve all schedule programs layered onto a specific HVAC zone."""
+    progs = schedule_db.get_programs_for_group(group_id)
+    for p in progs:
+        p["weekly_hours"] = calculate_weekly_runtime_hours(p["weekly_pattern"])
+    return progs
+
+
+@router.put("/schedules/zones/{group_id}/programs", summary="Set Assigned Programs for a Zone")
+async def set_zone_programs(
+    group_id: int,
+    request: AssignProgramsToZoneRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Assign multiple schedule programs to a zone, re-merge, and flash hardware EEPROM."""
+    try:
+        schedule_db.assign_programs_to_group(group_id, request.program_ids)
+        await sync_group_hardware(mgr.client, group_id)
+        assigned_progs = schedule_db.get_programs_for_group(group_id)
+        for p in assigned_progs:
+            p["weekly_hours"] = calculate_weekly_runtime_hours(p["weekly_pattern"])
+        merged_pattern, warnings = merge_programs_for_group(request.program_ids)
+        return {
+            "status": "success",
+            "group_id": group_id,
+            "assigned_programs": assigned_progs,
+            "merged_pattern": merged_pattern,
+            "warnings": warnings,
+        }
+    except Exception as ex:
+        logger.exception("Error in PUT /api/v1/schedules/zones/%s/programs: %s", group_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.get("/schedules/zones/{group_id}/merged", summary="Get Merged 7-Day Schedule for a Zone")
+async def get_zone_merged_schedule(
+    group_id: int,
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[str, Any]:
+    """Get the composite merged 7-day schedule pattern from all assigned program layers."""
+    program_ids = schedule_db.get_program_ids_for_group(group_id)
+    merged_pattern, warnings = merge_programs_for_group(program_ids)
+    return {
+        "group_id": group_id,
+        "program_ids": program_ids,
+        "merged_pattern": merged_pattern,
+        "warnings": warnings,
+    }
 
 
 @router.post("/schedules/reconstruct", summary="Reconstruct Schedules from Controller Hardware")

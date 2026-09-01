@@ -1,4 +1,4 @@
-"""Synchronization, pattern fingerprinting, and self-healing reconstruction between GB-50 and SQLite."""
+"""Synchronization, pattern fingerprinting, layered schedule merging, and self-healing reconstruction."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def calculate_weekly_runtime_hours(pattern: Dict[int, List[Dict[str, Any]]]) -> 
             ev_min = ev.get("hour", 0) * 60 + ev.get("minute", 0)
             if is_on:
                 total_minutes += max(0, ev_min - last_time_min)
-            is_on = (ev.get("drive") == "ON")
+            is_on = (ev.get("drive") == "ON" or (ev.get("drive") != "OFF" and (ev.get("set_temp_c") is not None or ev.get("mode") is not None)))
             last_time_min = ev_min
         
         if is_on:
@@ -88,7 +88,7 @@ def generate_smart_name(
         if events:
             active_days.append(day)
             for ev in events:
-                if ev.get("drive") == "ON" and sample_on_time is None:
+                if (ev.get("drive") == "ON" or ev.get("drive") != "OFF") and sample_on_time is None:
                     sample_on_time = f"{ev.get('hour', 0):02d}:{ev.get('minute', 0):02d}"
                     if ev.get("set_temp_c"):
                         sample_temp_f = round((ev["set_temp_c"] * 9.0 / 5.0) + 32)
@@ -98,7 +98,6 @@ def generate_smart_name(
     if not active_days:
         return "Standby / Unscheduled", f"No scheduled timer events ({group_count} zones)"
 
-    # Check for Mon-Fri pattern
     is_weekdays = (active_days == [1, 2, 3, 4, 5])
     is_all_week = (len(active_days) == 7)
     is_weekend = (active_days == [6, 7] or active_days == [7])
@@ -130,6 +129,106 @@ def generate_smart_name(
     return name, desc
 
 
+def merge_programs_for_group(
+    program_ids: List[int],
+) -> Tuple[Dict[int, List[Dict[str, Any]]], List[str]]:
+    """
+    Merge multiple layered schedule programs into a single coherent 7-day pattern (1=Mon .. 7=Sun).
+    Returns (merged_7day_pattern, list_of_warnings).
+    """
+    if not program_ids:
+        return {d: [] for d in range(1, 8)}, []
+
+    progs = []
+    for pid in program_ids:
+        p = schedule_db.get_schedule(pid)
+        if p:
+            progs.append(p)
+
+    merged_pattern: Dict[int, List[Dict[str, Any]]] = {}
+    warnings: List[str] = []
+
+    for day in range(1, 8):
+        day_events: List[Dict[str, Any]] = []
+        for p in progs:
+            p_events = p["weekly_pattern"].get(day, [])
+            for ev in p_events:
+                ev_copy = dict(ev)
+                ev_copy["_source_program_id"] = p["id"]
+                ev_copy["_source_program_name"] = p["name"]
+                day_events.append(ev_copy)
+
+        # De-duplicate / resolve same-minute events
+        by_minute: Dict[int, Dict[str, Any]] = {}
+        for ev in day_events:
+            min_key = ev.get("hour", 0) * 60 + ev.get("minute", 0)
+            if min_key in by_minute:
+                existing = by_minute[min_key]
+                # If current event is ON and existing is OFF, take ON
+                if ev.get("drive") != "OFF" and existing.get("drive") == "OFF":
+                    by_minute[min_key] = ev
+                elif ev.get("drive") == "OFF" and existing.get("drive") != "OFF":
+                    pass
+                else:
+                    # Same drive state, take latest defined
+                    by_minute[min_key] = ev
+            else:
+                by_minute[min_key] = ev
+
+        sorted_events = [by_minute[k] for k in sorted(by_minute.keys())]
+
+        # GB-50 constraint: maximum 16 events per day
+        if len(sorted_events) > 16:
+            warnings.append(f"Day {day} exceeds GB-50 16-event limit ({len(sorted_events)} events). Truncating to first 16.")
+            sorted_events = sorted_events[:16]
+
+        clean_events = []
+        for idx, ev in enumerate(sorted_events, 1):
+            temp_c = ev.get("set_temp_c")
+            temp_f = ev.get("set_temp_f")
+            if temp_c is not None and temp_f is None:
+                temp_f = round((temp_c * 9.0 / 5.0) + 32.0, 1)
+            elif temp_f is not None and temp_c is None:
+                temp_c = round(((temp_f - 32.0) * 5.0 / 9.0) * 2.0) / 2.0
+
+            clean_events.append({
+                "index": idx,
+                "hour": ev.get("hour", 0),
+                "minute": ev.get("minute", 0),
+                "time_str": f"{ev.get('hour', 0):02d}:{ev.get('minute', 0):02d}",
+                "drive": ev.get("drive", "ON"),
+                "mode": ev.get("mode", "AUTO"),
+                "set_temp_c": temp_c,
+                "set_temp_f": temp_f,
+                "fan_speed": ev.get("fan_speed", "AUTO"),
+                "air_direction": ev.get("air_direction", ""),
+                "source_program_id": ev.get("_source_program_id"),
+                "source_program_name": ev.get("_source_program_name"),
+            })
+
+        merged_pattern[day] = clean_events
+
+    return merged_pattern, warnings
+
+
+async def sync_group_hardware(client: GB50Client, group_id: int) -> bool:
+    """Recompute merged weekly pattern from all assigned programs and flash group hardware EEPROM."""
+    program_ids = schedule_db.get_program_ids_for_group(group_id)
+    merged_pattern, _warnings = merge_programs_for_group(program_ids)
+
+    logger.info(f"Flashing merged schedule ({len(program_ids)} programs) to group {group_id} across all 7 days...")
+    for day in range(1, 8):
+        events = merged_pattern.get(day, [])
+        await client.set_weekly_schedule(
+            group_ids=[group_id],
+            day_of_week=day,
+            events=events,
+        )
+
+    schedule_db.set_sync_status(group_id, "SYNCED")
+    return True
+
+
 async def reconstruct_schedules_from_controller(
     client: GB50Client,
     force: bool = False,
@@ -141,19 +240,16 @@ async def reconstruct_schedules_from_controller(
 
     existing_count = schedule_db.count_schedules()
     if existing_count > 0 and not force:
-        # Check drift instead of reconstructing
         await check_schedule_drift(client)
         return schedule_db.list_schedules()
 
     logger.info(f"Reconstructing schedule programs from {len(groups)} controller groups...")
 
-    # Fetch 7-day pattern for each group
     group_patterns: Dict[int, Dict[int, List[Dict[str, Any]]]] = {}
     
     async def _fetch_group_weekly(gid: int):
         try:
             p_items = await client.get_weekly_schedule(gid)
-            # Convert ScheduleItem objects to dictionary payloads
             p_dict: Dict[int, List[Dict[str, Any]]] = {}
             for day, items in p_items.items():
                 p_dict[day] = [
@@ -177,7 +273,6 @@ async def reconstruct_schedules_from_controller(
     tasks = [_fetch_group_weekly(g.group_id) for g in groups]
     await asyncio.gather(*tasks)
 
-    # Cluster groups by pattern fingerprint
     clusters: Dict[str, List[int]] = {}
     cluster_sample_patterns: Dict[str, Dict[int, List[Dict[str, Any]]]] = {}
 
@@ -187,15 +282,12 @@ async def reconstruct_schedules_from_controller(
         if fp not in cluster_sample_patterns:
             cluster_sample_patterns[fp] = pat
 
-    # Wipe existing if force
     if force:
         for s in schedule_db.list_schedules():
             schedule_db.delete_schedule(s["id"])
 
-    # Create named schedule programs
     color_idx = 0
     created_programs = []
-    # Sort clusters: active schedules first, then empty schedules
     sorted_fps = sorted(
         clusters.keys(),
         key=lambda k: (0 if k != "EMPTY_SCHEDULE" else 1, -len(clusters[k]))
@@ -223,67 +315,53 @@ async def reconstruct_schedules_from_controller(
 
 
 async def push_schedule_to_hardware(client: GB50Client, schedule_id: int) -> bool:
-    """Push a database schedule program's 7-day pattern to all assigned controller zones."""
+    """Push schedule changes to all groups that subscribe to this schedule program."""
     prog = schedule_db.get_schedule(schedule_id)
     if not prog or not prog["assigned_group_ids"]:
         return True
 
     gids = prog["assigned_group_ids"]
-    pat = prog["weekly_pattern"]
-
-    logger.info(f"Writing schedule '{prog['name']}' to controller groups {gids} across all 7 days...")
-
-    # Write each day 1..7 to hardware
-    for day in range(1, 8):
-        events = pat.get(day, [])
-        await client.set_weekly_schedule(
-            group_ids=gids,
-            day_of_week=day,
-            events=events,
-        )
-
-    # Mark as SYNCED
+    logger.info(f"Re-syncing {len(gids)} groups subscribed to program '{prog['name']}'...")
     for gid in gids:
-        schedule_db.set_sync_status(gid, "SYNCED")
+        await sync_group_hardware(client, gid)
 
     return True
 
 
 async def check_schedule_drift(client: GB50Client) -> Dict[int, str]:
-    """Check if any zone's hardware pattern has drifted from its assigned DB schedule."""
-    assignments = schedule_db.list_schedules()
+    """Check if any zone's hardware pattern has drifted from its merged DB schedule."""
+    all_groups = schedule_db.get_all_group_program_assignments()
     drift_report = {}
 
-    for prog in assignments:
-        prog_pat = prog["weekly_pattern"]
-        prog_fp = fingerprint_pattern(prog_pat)
+    for gid, pids in all_groups.items():
+        merged_pat, _ = merge_programs_for_group(pids)
+        expected_fp = fingerprint_pattern(merged_pat)
 
-        for gid in prog["assigned_group_ids"]:
-            try:
-                hw_items = await client.get_weekly_schedule(gid)
-                hw_dict = {
-                    day: [
-                        {
-                            "hour": i.hour,
-                            "minute": i.minute,
-                            "drive": i.drive,
-                            "mode": i.mode,
-                            "set_temp_c": i.set_temp_c,
-                            "fan_speed": i.fan_speed,
-                            "air_direction": i.air_direction,
-                        }
-                        for i in items
-                    ]
-                    for day, items in hw_items.items()
-                }
-                hw_fp = fingerprint_pattern(hw_dict)
-                if hw_fp != prog_fp:
-                    schedule_db.set_sync_status(gid, "DRIFT_DETECTED")
-                    drift_report[gid] = "DRIFT_DETECTED"
-                else:
-                    schedule_db.set_sync_status(gid, "SYNCED")
-                    drift_report[gid] = "SYNCED"
-            except Exception as ex:
-                logger.debug(f"Could not check drift for group {gid}: {ex}")
+        try:
+            hw_items = await client.get_weekly_schedule(gid)
+            hw_dict = {
+                day: [
+                    {
+                        "hour": i.hour,
+                        "minute": i.minute,
+                        "drive": i.drive,
+                        "mode": i.mode,
+                        "set_temp_c": i.set_temp_c,
+                        "fan_speed": i.fan_speed,
+                        "air_direction": i.air_direction,
+                    }
+                    for i in items
+                ]
+                for day, items in hw_items.items()
+            }
+            hw_fp = fingerprint_pattern(hw_dict)
+            if hw_fp != expected_fp:
+                schedule_db.set_sync_status(gid, "DRIFT_DETECTED")
+                drift_report[gid] = "DRIFT_DETECTED"
+            else:
+                schedule_db.set_sync_status(gid, "SYNCED")
+                drift_report[gid] = "SYNCED"
+        except Exception as ex:
+            logger.debug(f"Could not check drift for group {gid}: {ex}")
 
     return drift_report

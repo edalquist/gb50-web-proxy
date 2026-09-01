@@ -103,6 +103,8 @@ export interface ScheduleItem {
   air_direction?: AirDirection;
   fan_speed?: FanSpeed;
   time_str: string;
+  source_program_id?: number;
+  source_program_name?: string;
 }
 
 export interface ScheduleEventInput {

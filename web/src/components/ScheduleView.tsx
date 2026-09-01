@@ -32,7 +32,10 @@ import {
   deleteScheduleProgram,
   assignZonesToProgram,
   pushScheduleProgramToHardware,
-  reconstructSchedulesFromHardware
+  reconstructSchedulesFromHardware,
+  fetchAllZoneAssignments,
+  updateZonePrograms,
+  fetchZoneMergedSchedule
 } from '../api';
 import { useAuth } from '../AuthContext';
 
@@ -78,6 +81,7 @@ interface TimelineSpan {
   fanSpeed?: string;
   airDirection?: string;
   eventIndex?: number;
+  sourceProgramName?: string;
 }
 
 export const ScheduleView: React.FC<ScheduleViewProps> = ({
@@ -105,6 +109,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
   // --- Schedule Programs State ---
   const [programs, setPrograms] = useState<ScheduleProgram[]>([]);
+  const [zoneAssignments, setZoneAssignments] = useState<Record<number, number[]>>({});
   const [loadingPrograms, setLoadingPrograms] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
@@ -122,6 +127,10 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: []
   });
   const [programEditorDay, setProgramEditorDay] = useState<number>(7);
+
+  // Layer Management Modal (Planner)
+  const [isLayerModalOpen, setIsLayerModalOpen] = useState(false);
+  const [layerModalSelectedPrograms, setLayerModalSelectedPrograms] = useState<number[]>([]);
 
   // --- Planner State ---
   const [selectedDay, setSelectedDay] = useState<number>(7); // Default Sunday
@@ -173,8 +182,12 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const loadPrograms = async () => {
     setLoadingPrograms(true);
     try {
-      const data = await fetchSchedulePrograms();
-      setPrograms(data);
+      const [progs, assigns] = await Promise.all([
+        fetchSchedulePrograms(),
+        fetchAllZoneAssignments().catch(() => ({})),
+      ]);
+      setPrograms(progs);
+      setZoneAssignments(assigns);
     } catch (err: any) {
       console.error('Failed to load schedule programs:', err);
     } finally {
@@ -190,13 +203,27 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     if (!groupId) return;
     setLoadingSchedule(true);
     try {
-      const data = await fetchWeeklySchedule(groupId);
-      setWeeklyPatterns((prev) => ({
-        ...prev,
-        [groupId]: data,
-      }));
+      const assignedPids = zoneAssignments[groupId] || [];
+      if (assignedPids.length > 0) {
+        const mergedData = await fetchZoneMergedSchedule(groupId);
+        setWeeklyPatterns((prev) => ({
+          ...prev,
+          [groupId]: mergedData.merged_pattern,
+        }));
+      } else {
+        const data = await fetchWeeklySchedule(groupId);
+        setWeeklyPatterns((prev) => ({
+          ...prev,
+          [groupId]: data,
+        }));
+      }
     } catch (err) {
       console.error(`Failed to load weekly schedule for group ${groupId}:`, err);
+      // Fallback to direct controller query
+      try {
+        const fallback = await fetchWeeklySchedule(groupId);
+        setWeeklyPatterns((prev) => ({ ...prev, [groupId]: fallback }));
+      } catch (_) {}
     } finally {
       setLoadingSchedule(false);
     }
@@ -206,7 +233,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     if (primaryGroupId) {
       loadWeeklyScheduleForGroup(primaryGroupId);
     }
-  }, [primaryGroupId]);
+  }, [primaryGroupId, zoneAssignments]);
 
   const loadAllMatrixSchedules = async () => {
     for (const g of groups) {
@@ -232,10 +259,16 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   // Group lookup map
   const groupMap = useMemo(() => new Map(groups.map((g) => [g.group_id, g])), [groups]);
 
-  // Assigned program for current primary group
-  const currentAssignedProgram = useMemo(() => {
-    return programs.find((p) => p.assigned_group_ids.includes(primaryGroupId));
-  }, [programs, primaryGroupId]);
+  // Programs lookup map
+  const programMap = useMemo(() => new Map(programs.map((p) => [p.id, p])), [programs]);
+
+  // Assigned programs for current primary group
+  const currentAssignedPrograms: ScheduleProgram[] = useMemo(() => {
+    const assignedIds = zoneAssignments[primaryGroupId] || [];
+    return assignedIds
+      .map((id) => programMap.get(id))
+      .filter((p): p is ScheduleProgram => p !== undefined);
+  }, [zoneAssignments, primaryGroupId, programMap]);
 
   // Calculate 24-hour visual timeline spans for current day
   const timelineSpans: TimelineSpan[] = useMemo(() => {
@@ -287,11 +320,49 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         fanSpeed: ev.fan_speed,
         airDirection: ev.air_direction,
         eventIndex: i,
+        sourceProgramName: ev.source_program_name,
       });
     }
 
     return spans;
   }, [currentDayEvents]);
+
+  // --- Layer Management Action Handlers ---
+  const handleOpenLayerModal = () => {
+    const currentPids = zoneAssignments[primaryGroupId] || [];
+    setLayerModalSelectedPrograms([...currentPids]);
+    setIsLayerModalOpen(true);
+  };
+
+  const handleSaveLayerAssignments = async () => {
+    setIsSaving(true);
+    setStatusMsg(null);
+    try {
+      for (const gid of selectedGroupIds) {
+        const res = await updateZonePrograms(gid, layerModalSelectedPrograms);
+        setWeeklyPatterns((prev) => ({
+          ...prev,
+          [gid]: res.merged_pattern,
+        }));
+      }
+
+      setZoneAssignments((prev) => {
+        const next = { ...prev };
+        for (const gid of selectedGroupIds) {
+          next[gid] = [...layerModalSelectedPrograms];
+        }
+        return next;
+      });
+
+      await loadPrograms();
+      setIsLayerModalOpen(false);
+      setStatusMsg(`Updated schedule layers for ${selectedGroupIds.length} zone(s) and flashed controller EEPROM.`);
+    } catch (err: any) {
+      setStatusMsg(`Error updating schedule layers: ${err.message}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   // --- Program Action Handlers ---
   const handleOpenAssignModal = (prog: ScheduleProgram) => {
@@ -311,6 +382,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       for (const gid of assignModalSelectedZones) {
         loadWeeklyScheduleForGroup(gid);
       }
+      await loadPrograms();
     } catch (err: any) {
       setStatusMsg(`Error assigning zones: ${err.message}`);
     } finally {
@@ -339,6 +411,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     try {
       const refreshed = await reconstructSchedulesFromHardware();
       setPrograms(refreshed);
+      await loadPrograms();
       setStatusMsg(`Successfully reconstructed ${refreshed.length} schedule programs from controller hardware.`);
     } catch (err: any) {
       setStatusMsg(`Error reconstructing schedules: ${err.message}`);
@@ -352,6 +425,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     try {
       await deleteScheduleProgram(progId);
       setPrograms((prev) => prev.filter((p) => p.id !== progId));
+      await loadPrograms();
       setStatusMsg("Schedule program deleted.");
     } catch (err: any) {
       setStatusMsg(`Error deleting program: ${err.message}`);
@@ -406,6 +480,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         setPrograms((prev) => [...prev, created]);
         setStatusMsg(`Created new schedule program '${created.name}'.`);
       }
+      await loadPrograms();
       setIsCreateProgramOpen(false);
     } catch (err: any) {
       setStatusMsg(`Error saving program: ${err.message}`);
@@ -650,7 +725,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             </h1>
           </div>
           <p className="text-sm text-slate-400">
-            Configure named schedule programs, weekly timer patterns, and multi-zone EEPROM routines.
+            Configure named schedule programs, layered multi-schedule subscriptions, and 7-day EEPROM routines.
           </p>
         </div>
 
@@ -722,7 +797,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           {/* Programs Toolbar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-center gap-2 text-sm text-slate-400">
-              <span>Coherent schedule profiles synchronized with controller EEPROM.</span>
+              <span>Modular schedule layers that can be combined and subscribed by multiple zones.</span>
             </div>
 
             <div className="flex items-center gap-3">
@@ -770,7 +845,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       <div className="flex items-start justify-between gap-4 mb-3">
                         <div className="flex items-center gap-3">
                           <span className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${colorConfig.badge}`}>
-                            {prog.name.slice(0, 16)}
+                            {prog.name.slice(0, 18)}
                           </span>
                           {prog.sync_status === 'DRIFT_DETECTED' && (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
@@ -807,7 +882,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       {/* Weekly Mini-Timeline Bar */}
                       <div className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 mb-4 space-y-2">
                         <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-1">
-                          <span>7-Day Active Schedule</span>
+                          <span>Active Schedule Layer</span>
                           <span className="text-slate-300 font-mono">{prog.weekly_hours} hrs/wk</span>
                         </div>
                         <div className="grid grid-cols-7 gap-1">
@@ -843,7 +918,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       <div className="mb-4">
                         <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
                           <span className="font-semibold text-slate-300">
-                            Assigned Zones ({assignedCount})
+                            Subscribed Zones ({assignedCount})
                           </span>
                           {isOperatorOrAdmin && (
                             <button
@@ -924,7 +999,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div>
               <h2 className="text-base font-bold text-slate-100 mb-1">Target HVAC Zones</h2>
-              <p className="text-xs text-slate-400">Select zones to edit and write to controller.</p>
+              <p className="text-xs text-slate-400">Select zones to configure schedule layers.</p>
             </div>
 
             {/* Quick Filters */}
@@ -972,7 +1047,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               {filteredPlannerGroups.map((g) => {
                 const isSelected = selectedGroupIds.includes(g.group_id);
                 const isPrimary = primaryGroupId === g.group_id;
-                const assignedProg = programs.find((p) => p.assigned_group_ids.includes(g.group_id));
+                const assignedPids = zoneAssignments[g.group_id] || [];
+                const assignedProgsList = assignedPids.map(id => programMap.get(id)).filter(Boolean) as ScheduleProgram[];
 
                 return (
                   <div
@@ -991,7 +1067,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                         : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:border-slate-700'
                     }`}
                   >
-                    <div className="flex items-center gap-2 overflow-hidden">
+                    <div className="flex items-center gap-2 overflow-hidden w-full">
                       <input
                         type="checkbox"
                         checked={isSelected}
@@ -1005,21 +1081,24 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                             setSelectedGroupIds([...selectedGroupIds, g.group_id]);
                           }
                         }}
-                        className="rounded border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+                        className="rounded border-slate-700 text-blue-600 focus:ring-0 cursor-pointer shrink-0"
                       />
-                      <div className="truncate">
+                      <div className="truncate w-full">
                         <span className="font-semibold text-slate-200 block truncate">
                           Z{g.group_id}: {g.name}
                         </span>
-                        <div className="flex items-center gap-1.5 text-[10px]">
-                          <span className="text-slate-500">
+                        <div className="flex items-center gap-1 text-[10px] flex-wrap mt-0.5">
+                          <span className="text-slate-500 shrink-0">
                             {g.model === 'LC' ? 'Lossnay' : `Floor ${g.floor || 1}`}
                           </span>
-                          {assignedProg && (
-                            <span className="text-blue-400 font-medium truncate">
-                              • {assignedProg.name}
+                          {assignedProgsList.map((ap) => (
+                            <span
+                              key={ap.id}
+                              className={`px-1 py-0.2 rounded text-[9px] font-bold ${COLOR_CLASSES[ap.color]?.badge || COLOR_CLASSES.blue.badge}`}
+                            >
+                              {ap.name.slice(0, 10)}
                             </span>
-                          )}
+                          ))}
                         </div>
                       </div>
                     </div>
@@ -1036,28 +1115,46 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
           {/* Right Column: 24-Hour Timeline Planner */}
           <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
-            {/* Header with Zone Info and Quick Program Loader */}
+            {/* Header with Zone Info and Multi-Schedule Layers */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-lg font-bold text-slate-100">
                     {primaryGroup ? `Zone ${primaryGroup.group_id}: ${primaryGroup.name}` : `Zone ${primaryGroupId}`}
                   </h2>
-                  {currentAssignedProgram && (
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${COLOR_CLASSES[currentAssignedProgram.color]?.badge || COLOR_CLASSES.blue.badge}`}>
-                      {currentAssignedProgram.name}
+                  {/* Render all assigned program badges */}
+                  {currentAssignedPrograms.map((prog) => (
+                    <span
+                      key={prog.id}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${COLOR_CLASSES[prog.color]?.badge || COLOR_CLASSES.blue.badge}`}
+                    >
+                      {prog.name}
+                    </span>
+                  ))}
+                  {currentAssignedPrograms.length === 0 && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400">
+                      No Program Layers
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-slate-400">
-                  Targeting {selectedGroupIds.length} zone(s). Select a day to view and configure its 24-hour routine.
+                  Targeting {selectedGroupIds.length} zone(s). Layer multiple schedule routines or edit events below.
                 </p>
               </div>
 
-              {/* Quick Load from Program Dropdown */}
-              {isOperatorOrAdmin && programs.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400 font-semibold">Load Template:</span>
+              {/* Action Toolbar: Layer Manager + Template Loader */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {isOperatorOrAdmin && (
+                  <button
+                    onClick={handleOpenLayerModal}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-md transition"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    Layer Schedules ({currentAssignedPrograms.length})
+                  </button>
+                )}
+
+                {isOperatorOrAdmin && programs.length > 0 && (
                   <select
                     onChange={(e) => {
                       const progId = parseInt(e.target.value, 10);
@@ -1065,17 +1162,17 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       if (prog) handleLoadProgramIntoPlanner(prog);
                     }}
                     defaultValue=""
-                    className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
                   >
-                    <option value="" disabled>Select Program...</option>
+                    <option value="" disabled>Load Template...</option>
                     {programs.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name} ({p.weekly_hours} hrs/wk)
                       </option>
                     ))}
                   </select>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             {/* 7-Day Selector Bar */}
@@ -1124,10 +1221,10 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-bold text-slate-100">
-                    {DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} 24-Hour Visual Schedule
+                    {DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} Merged 24-Hour Schedule
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Colored blocks indicate active HVAC conditioning. Slate blocks represent power OFF / unoccupied setback.
+                    Active HVAC conditioning blocks with layered program sources. Click any block to edit.
                   </p>
                 </div>
 
@@ -1184,7 +1281,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                             ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold hover:bg-emerald-500/30'
                             : 'bg-slate-900/90 text-slate-500 font-mono hover:bg-slate-800/60'
                         }`}
-                        title={`${span.startStr} - ${span.endStr}: ${span.drive}${isOn ? ` (${span.tempF}°F ${span.mode})` : ''}`}
+                        title={`${span.startStr} - ${span.endStr}: ${span.drive}${isOn ? ` (${span.tempF}°F ${span.mode})` : ''}${span.sourceProgramName ? ` [${span.sourceProgramName}]` : ''}`}
                       >
                         <span className="text-xs truncate w-full">
                           {isOn ? (
@@ -1194,8 +1291,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                           )}
                         </span>
                         {isOn && widthPercent > 15 && (
-                          <span className="text-[10px] font-mono opacity-80 uppercase tracking-wider">
-                            {span.mode || 'AUTO'}
+                          <span className="text-[10px] font-mono opacity-80 uppercase tracking-wider truncate">
+                            {span.sourceProgramName ? `${span.sourceProgramName.slice(0, 12)}` : (span.mode || 'AUTO')}
                           </span>
                         )}
                       </div>
@@ -1260,7 +1357,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                             {ev.time_str}
                           </div>
                           <div>
-                            <div className="flex items-center gap-2 font-bold">
+                            <div className="flex items-center gap-2 font-bold flex-wrap">
                               <span className={isOn ? 'text-emerald-300' : 'text-slate-300'}>
                                 {isOn ? 'Start Climate Conditioning' : 'System Shutdown / Setback'}
                               </span>
@@ -1269,6 +1366,11 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                               }`}>
                                 {ev.drive || (isOn ? 'ON' : 'OFF')}
                               </span>
+                              {ev.source_program_name && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-900/60 text-blue-300 border border-blue-700/50">
+                                  {ev.source_program_name}
+                                </span>
+                              )}
                             </div>
                             {isOn && (
                               <p className="text-[11px] text-slate-400 mt-0.5">
@@ -1400,7 +1502,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               <thead>
                 <tr className="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
                   <th className="py-3 px-4 font-semibold">Zone</th>
-                  <th className="py-3 px-3 font-semibold">Assigned Program</th>
+                  <th className="py-3 px-3 font-semibold">Assigned Program Layers</th>
                   {DAYS_OF_WEEK.map((d) => (
                     <th key={d.id} className={`py-3 px-3 font-semibold text-center ${d.highlight ? 'text-blue-400' : ''}`}>
                       {d.short}
@@ -1410,8 +1512,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-sans">
                 {filteredMatrixGroups.map((g) => {
-                  const assignedProg = programs.find((p) => p.assigned_group_ids.includes(g.group_id));
-                  const colorConfig = assignedProg ? (COLOR_CLASSES[assignedProg.color] || COLOR_CLASSES.blue) : COLOR_CLASSES.slate;
+                  const assignedPids = zoneAssignments[g.group_id] || [];
+                  const assignedProgsList = assignedPids.map(id => programMap.get(id)).filter(Boolean) as ScheduleProgram[];
 
                   return (
                     <tr key={g.group_id} className="hover:bg-slate-800/30 transition">
@@ -1425,10 +1527,20 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       </td>
 
                       <td className="py-3 px-3">
-                        {assignedProg ? (
-                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${colorConfig.badge}`}>
-                            {assignedProg.name}
-                          </span>
+                        {assignedProgsList.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {assignedProgsList.map((ap) => {
+                              const colorConfig = COLOR_CLASSES[ap.color] || COLOR_CLASSES.blue;
+                              return (
+                                <span
+                                  key={ap.id}
+                                  className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${colorConfig.badge}`}
+                                >
+                                  {ap.name}
+                                </span>
+                              );
+                            })}
+                          </div>
                         ) : (
                           <span className="text-[10px] text-slate-500 italic">
                             Unassigned
@@ -1477,7 +1589,105 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       )}
 
       {/* ========================================================================= */}
-      {/* MODAL: ASSIGN ZONES TO PROGRAM */}
+      {/* MODAL: LAYER SCHEDULE PROGRAMS (PLANNER) */}
+      {/* ========================================================================= */}
+      {isLayerModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div>
+                <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-blue-400" />
+                  Layer Schedule Programs
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Select all schedule blocks to compose onto {selectedGroupIds.length} zone(s).
+                </p>
+              </div>
+              <button
+                onClick={() => setIsLayerModalOpen(false)}
+                className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Program Selection Checkboxes */}
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+              {programs.length === 0 ? (
+                <p className="text-xs text-slate-500 italic p-4 text-center">
+                  No schedule programs created yet. Create a program in the Schedule Programs tab.
+                </p>
+              ) : (
+                programs.map((prog) => {
+                  const isChecked = layerModalSelectedPrograms.includes(prog.id);
+                  const colorConfig = COLOR_CLASSES[prog.color] || COLOR_CLASSES.blue;
+
+                  return (
+                    <label
+                      key={prog.id}
+                      className={`p-3 rounded-xl border cursor-pointer flex items-center justify-between transition ${
+                        isChecked
+                          ? 'bg-blue-600/10 border-blue-500/50 shadow-sm'
+                          : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setLayerModalSelectedPrograms([...layerModalSelectedPrograms, prog.id]);
+                            } else {
+                              setLayerModalSelectedPrograms(layerModalSelectedPrograms.filter((id) => id !== prog.id));
+                            }
+                          }}
+                          className="rounded border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+                        />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-slate-200">{prog.name}</span>
+                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${colorConfig.badge}`}>
+                              {prog.weekly_hours} hrs/wk
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">{prog.description || 'No description'}</p>
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
+              <span className="text-xs text-slate-400">
+                Selected <strong className="text-slate-200">{layerModalSelectedPrograms.length}</strong> layer(s).
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setIsLayerModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveLayerAssignments}
+                  disabled={isSaving}
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-blue-500/20"
+                >
+                  <Save className="w-4 h-4" />
+                  {isSaving ? 'Merging & Flashing...' : 'Apply & Flash EEPROM'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: ASSIGN ZONES TO PROGRAM (PROGRAMS TAB) */}
       {/* ========================================================================= */}
       {selectedProgramForAssign && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -1488,7 +1698,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   Assign Zones to '{selectedProgramForAssign.name}'
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Select zones to program with this 7-day schedule in controller EEPROM.
+                  Select zones to subscribe to this schedule program in controller EEPROM.
                 </p>
               </div>
               <button
@@ -1636,7 +1846,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 <label className="block text-xs font-semibold text-slate-300 mb-1">Program Name</label>
                 <input
                   type="text"
-                  placeholder="e.g. Weekday Standard Hours"
+                  placeholder="e.g. Sunday Worship & Fellowship"
                   value={programFormName}
                   onChange={(e) => setProgramFormName(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
@@ -1665,7 +1875,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 <label className="block text-xs font-semibold text-slate-300 mb-1">Description / Notes</label>
                 <input
                   type="text"
-                  placeholder="e.g. Standard occupied temperature profile for offices and common areas"
+                  placeholder="e.g. Sunday service climate profile for Sanctuary and Fellowship areas"
                   value={programFormDesc}
                   onChange={(e) => setProgramFormDesc(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"

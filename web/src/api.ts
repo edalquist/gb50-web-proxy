@@ -348,6 +348,51 @@ export async function reconstructSchedulesFromHardware(): Promise<ScheduleProgra
   return res.json();
 }
 
+export async function fetchZonePrograms(groupId: number): Promise<ScheduleProgram[]> {
+  const res = await authFetch(`${API_BASE}/schedules/zones/${groupId}/programs`);
+  if (!res.ok) throw new Error(`Failed to fetch zone programs: ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateZonePrograms(
+  groupId: number,
+  programIds: number[]
+): Promise<{
+  status: string;
+  group_id: number;
+  assigned_programs: ScheduleProgram[];
+  merged_pattern: Record<number, ScheduleItem[]>;
+  warnings: string[];
+}> {
+  const res = await authFetch(`${API_BASE}/schedules/zones/${groupId}/programs`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ program_ids: programIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to update zone programs: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchZoneMergedSchedule(groupId: number): Promise<{
+  group_id: number;
+  program_ids: number[];
+  merged_pattern: Record<number, ScheduleItem[]>;
+  warnings: string[];
+}> {
+  const res = await authFetch(`${API_BASE}/schedules/zones/${groupId}/merged`);
+  if (!res.ok) throw new Error(`Failed to fetch merged schedule: ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchAllZoneAssignments(): Promise<Record<number, number[]>> {
+  const res = await authFetch(`${API_BASE}/schedules/assignments`);
+  if (!res.ok) throw new Error(`Failed to fetch schedule assignments: ${res.statusText}`);
+  return res.json();
+}
+
 export async function fetchInterlocks(): Promise<Array<{ ic_address: number; lc_address: number }>> {
   const res = await authFetch(`${API_BASE}/interlocks`);
   if (!res.ok) throw new Error(`Failed to fetch interlocks: ${res.statusText}`);

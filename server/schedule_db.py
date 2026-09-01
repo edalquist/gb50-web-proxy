@@ -1,4 +1,4 @@
-"""SQLite repository for named schedule programs and zone assignments."""
+"""SQLite repository for named schedule programs and multi-program zone assignments (N:M)."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class ScheduleDatabase:
         return conn
 
     def _init_db(self) -> None:
-        """Initialize schedules and schedule_assignments tables."""
+        """Initialize schedules and schedule_assignments tables with N:M composite key."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -59,16 +59,45 @@ class ScheduleDatabase:
                 )
                 """
             )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS schedule_assignments (
-                    group_id INTEGER PRIMARY KEY,
-                    schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
-                    synced_at TEXT NOT NULL,
-                    sync_status TEXT NOT NULL DEFAULT 'SYNCED'
+
+            # Check if schedule_assignments has single-column PK or composite PK
+            cursor.execute("PRAGMA table_info(schedule_assignments)")
+            cols = cursor.fetchall()
+            if cols:
+                pk_cols = [c["name"] for c in cols if c["pk"] > 0]
+                if pk_cols == ["group_id"]:
+                    # Migrate table to composite primary key (group_id, schedule_id)
+                    cursor.execute("ALTER TABLE schedule_assignments RENAME TO schedule_assignments_old")
+                    cursor.execute(
+                        """
+                        CREATE TABLE schedule_assignments (
+                            group_id INTEGER NOT NULL,
+                            schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+                            synced_at TEXT NOT NULL,
+                            sync_status TEXT NOT NULL DEFAULT 'SYNCED',
+                            PRIMARY KEY (group_id, schedule_id)
+                        )
+                        """
+                    )
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
+                        SELECT group_id, schedule_id, synced_at, sync_status FROM schedule_assignments_old
+                        """
+                    )
+                    cursor.execute("DROP TABLE schedule_assignments_old")
+            else:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schedule_assignments (
+                        group_id INTEGER NOT NULL,
+                        schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+                        synced_at TEXT NOT NULL,
+                        sync_status TEXT NOT NULL DEFAULT 'SYNCED',
+                        PRIMARY KEY (group_id, schedule_id)
+                    )
+                    """
                 )
-                """
-            )
             conn.commit()
 
     def count_schedules(self) -> int:
@@ -107,7 +136,6 @@ class ScheduleDatabase:
             for row in rows:
                 sid = row["id"]
                 pattern = json.loads(row["pattern_json"])
-                # Convert string keys to int keys
                 int_pattern = {int(k): v for k, v in pattern.items()}
                 results.append({
                     "id": sid,
@@ -178,7 +206,6 @@ class ScheduleDatabase:
         if weekly_pattern is None:
             weekly_pattern = {d: [] for d in range(1, 8)}
 
-        # Ensure string keys for JSON serialization
         str_pattern = {str(k): v for k, v in weekly_pattern.items()}
         now_str = datetime.now(timezone.utc).isoformat()
 
@@ -197,12 +224,8 @@ class ScheduleDatabase:
                 for gid in assigned_group_ids:
                     cursor.execute(
                         """
-                        INSERT INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
+                        INSERT OR REPLACE INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
                         VALUES (?, ?, ?, 'SYNCED')
-                        ON CONFLICT(group_id) DO UPDATE SET
-                            schedule_id = excluded.schedule_id,
-                            synced_at = excluded.synced_at,
-                            sync_status = excluded.sync_status
                         """,
                         (gid, schedule_id, now_str),
                     )
@@ -248,7 +271,6 @@ class ScheduleDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"UPDATE schedules SET {', '.join(updates)} WHERE id = ?", params)
-            # Mark assignments as synced
             cursor.execute(
                 "UPDATE schedule_assignments SET sync_status = 'SYNCED', synced_at = ? WHERE schedule_id = ?",
                 (now_str, schedule_id),
@@ -267,7 +289,7 @@ class ScheduleDatabase:
             return cursor.rowcount > 0
 
     def assign_zones(self, schedule_id: int, group_ids: List[int]) -> bool:
-        """Assign a list of zone IDs to a schedule program, replacing previous assignments."""
+        """Assign a list of zone IDs to a schedule program, replacing previous assignments for this program."""
         now_str = datetime.now(timezone.utc).isoformat()
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -276,43 +298,111 @@ class ScheduleDatabase:
             for gid in group_ids:
                 cursor.execute(
                     """
-                    INSERT INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
+                    INSERT OR REPLACE INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
                     VALUES (?, ?, ?, 'SYNCED')
-                    ON CONFLICT(group_id) DO UPDATE SET
-                        schedule_id = excluded.schedule_id,
-                        synced_at = excluded.synced_at,
-                        sync_status = excluded.sync_status
                     """,
                     (gid, schedule_id, now_str),
                 )
             conn.commit()
             return True
 
-    def get_assignment_for_group(self, group_id: int) -> Optional[Dict[str, Any]]:
-        """Get the assigned schedule program for a specific HVAC zone group."""
+    def get_programs_for_group(self, group_id: int) -> List[Dict[str, Any]]:
+        """Get all schedule programs assigned to a specific HVAC zone group."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT schedule_id, sync_status, synced_at FROM schedule_assignments WHERE group_id = ?",
+                """
+                SELECT s.id, s.name, s.description, s.color, s.pattern_json, s.created_at, s.updated_at,
+                       sa.sync_status, sa.synced_at
+                FROM schedules s
+                JOIN schedule_assignments sa ON s.id = sa.schedule_id
+                WHERE sa.group_id = ?
+                ORDER BY s.id ASC
+                """,
                 (group_id,),
             )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return {
-                "group_id": group_id,
-                "schedule_id": row["schedule_id"],
-                "sync_status": row["sync_status"],
-                "synced_at": row["synced_at"],
-            }
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                pattern = json.loads(row["pattern_json"])
+                int_pattern = {int(k): v for k, v in pattern.items()}
+                results.append({
+                    "id": row["id"],
+                    "name": row["name"],
+                    "description": row["description"] or "",
+                    "color": row["color"] or "blue",
+                    "weekly_pattern": int_pattern,
+                    "sync_status": row["sync_status"],
+                    "synced_at": row["synced_at"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                })
+            return results
 
-    def set_sync_status(self, group_id: int, status: str) -> None:
+    def get_program_ids_for_group(self, group_id: int) -> List[int]:
+        """Get the list of schedule program IDs assigned to a specific HVAC group."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE schedule_assignments SET sync_status = ? WHERE group_id = ?",
-                (status, group_id),
+                "SELECT schedule_id FROM schedule_assignments WHERE group_id = ? ORDER BY schedule_id ASC",
+                (group_id,),
             )
+            return [r["schedule_id"] for r in cursor.fetchall()]
+
+    def assign_programs_to_group(self, group_id: int, program_ids: List[int]) -> bool:
+        """Set the list of schedule programs assigned to a single HVAC group."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM schedule_assignments WHERE group_id = ?", (group_id,))
+            for pid in program_ids:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status)
+                    VALUES (?, ?, ?, 'SYNCED')
+                    """,
+                    (group_id, pid, now_str),
+                )
+            conn.commit()
+            return True
+
+    def get_all_group_program_assignments(self) -> Dict[int, List[int]]:
+        """Get a map of { group_id: [program_id, ...] } across all groups."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT group_id, schedule_id FROM schedule_assignments ORDER BY group_id, schedule_id")
+            rows = cursor.fetchall()
+            mapping: Dict[int, List[int]] = {}
+            for r in rows:
+                mapping.setdefault(r["group_id"], []).append(r["schedule_id"])
+            return mapping
+
+    def get_assignment_for_group(self, group_id: int) -> Optional[Dict[str, Any]]:
+        """Get the primary assigned schedule program for a group (for backward compatibility)."""
+        progs = self.get_programs_for_group(group_id)
+        if not progs:
+            return None
+        return {
+            "group_id": group_id,
+            "schedule_id": progs[0]["id"],
+            "schedule_ids": [p["id"] for p in progs],
+            "sync_status": progs[0]["sync_status"],
+            "synced_at": progs[0]["synced_at"],
+        }
+
+    def set_sync_status(self, group_id: int, status: str, schedule_id: Optional[int] = None) -> None:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if schedule_id is not None:
+                cursor.execute(
+                    "UPDATE schedule_assignments SET sync_status = ? WHERE group_id = ? AND schedule_id = ?",
+                    (status, group_id, schedule_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE schedule_assignments SET sync_status = ? WHERE group_id = ?",
+                    (status, group_id),
+                )
             conn.commit()
 
 

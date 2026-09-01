@@ -38,9 +38,12 @@ web/.npm/
 web/dist/
 web/*.png
 
-# Databases & Local State
+# SQLite Databases
 *.db
-*.sqlite*
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
 # Testing & Scratch Scripts
 web/test_*.mjs

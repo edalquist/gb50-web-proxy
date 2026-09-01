@@ -356,7 +356,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
       await loadPrograms();
       setIsLayerModalOpen(false);
-      setStatusMsg(`Updated schedule layers for ${selectedGroupIds.length} zone(s) and flashed controller EEPROM.`);
+      setStatusMsg(`Updated schedule layers for ${selectedGroupIds.length} zone(s) and synced to controller.`);
     } catch (err: any) {
       setStatusMsg(`Error updating schedule layers: ${err.message}`);
     } finally {
@@ -378,7 +378,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       const updated = await assignZonesToProgram(selectedProgramForAssign.id, assignModalSelectedZones);
       setPrograms((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       setSelectedProgramForAssign(null);
-      setStatusMsg(`Successfully assigned ${assignModalSelectedZones.length} zones to '${updated.name}' and flashed controller hardware.`);
+      setStatusMsg(`Successfully assigned ${assignModalSelectedZones.length} zones to '${updated.name}' and synced to controller.`);
       for (const gid of assignModalSelectedZones) {
         loadWeeklyScheduleForGroup(gid);
       }
@@ -395,10 +395,10 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     setStatusMsg(null);
     try {
       const res = await pushScheduleProgramToHardware(prog.id);
-      setStatusMsg(res.message || `Successfully pushed '${prog.name}' to controller hardware.`);
+      setStatusMsg(res.message || `Successfully synced '${prog.name}' to controller.`);
       loadPrograms();
     } catch (err: any) {
-      setStatusMsg(`Error pushing schedule to hardware: ${err.message}`);
+      setStatusMsg(`Error syncing schedule: ${err.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -974,10 +974,10 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                             onClick={() => handlePushProgramToHardware(prog)}
                             disabled={isSaving || assignedCount === 0}
                             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition flex items-center gap-1.5 disabled:opacity-50"
-                            title="Force write to controller hardware"
+                            title="Sync schedule program to all assigned controller zones"
                           >
                             <Send className="w-3 h-3 text-blue-400" />
-                            Push EEPROM
+                            Sync to Zones
                           </button>
                         </div>
                       )}
@@ -1416,7 +1416,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             {isOperatorOrAdmin && (
               <div className="pt-4 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <span className="text-xs text-slate-400">
-                  Will save <strong className="text-white">{DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} Schedule</strong> to <strong className="text-blue-400">{selectedGroupIds.length} selected zone(s)</strong> in controller EEPROM.
+                  Will save <strong className="text-white">{DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label} Schedule</strong> to <strong className="text-blue-400">{selectedGroupIds.length} selected zone(s)</strong>.
                 </span>
                 <button
                   onClick={handleSavePlannerToHardware}
@@ -1424,7 +1424,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   <Save className="w-4 h-4" />
-                  {isSaving ? 'Writing to EEPROM...' : `Save ${DAYS_OF_WEEK.find(d => d.id === selectedDay)?.short} to ${selectedGroupIds.length} Zone(s)`}
+                  {isSaving ? 'Saving...' : `Save ${DAYS_OF_WEEK.find(d => d.id === selectedDay)?.short} to ${selectedGroupIds.length} Zone(s)`}
                 </button>
               </div>
             )}
@@ -1678,7 +1678,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-blue-500/20"
                 >
                   <Save className="w-4 h-4" />
-                  {isSaving ? 'Merging & Flashing...' : 'Apply & Flash EEPROM'}
+                  {isSaving ? 'Saving...' : 'Save & Apply'}
                 </button>
               </div>
             </div>
@@ -1814,7 +1814,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-2"
                 >
                   <Save className="w-4 h-4" />
-                  {isSaving ? 'Writing to Controller...' : 'Save & Flash Controller'}
+                  {isSaving ? 'Saving...' : 'Save & Apply'}
                 </button>
               </div>
             </div>

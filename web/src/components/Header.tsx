@@ -2,17 +2,15 @@ import React from 'react';
 import { 
   Building2, 
   Power, 
-  Sun, 
-  Briefcase, 
   Radio, 
-  Layers,
-  Wind,
-  Calendar,
-  Settings,
-  LogOut,
-  ShieldCheck,
-  CheckCircle2,
-  Eye
+  Layers, 
+  Wind, 
+  Calendar, 
+  Settings, 
+  LogOut, 
+  ShieldCheck, 
+  CheckCircle2, 
+  Eye 
 } from 'lucide-react';
 import { SystemInfo } from '../types';
 import { useAuth } from '../AuthContext';
@@ -24,7 +22,7 @@ interface HeaderProps {
   setActiveTab: (tab: 'dashboard' | 'ventilation' | 'schedules' | 'admin') => void;
   tempUnit: 'F' | 'C';
   setTempUnit: (u: 'F' | 'C') => void;
-  onApplyPreset: (preset: 'sunday' | 'all_off' | 'office' | 'night') => void;
+  onApplyPreset: (preset: 'all_on' | 'all_off' | 'occupied' | 'unoccupied' | string) => void;
   runningCount: number;
   dirtyFilterCount: number;
   alarmCount: number;
@@ -60,7 +58,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-bold text-slate-100 tracking-tight">
-                {systemInfo?.system_name || 'Example Facility'}
+                {systemInfo?.system_name || 'GB-50 Central Controller'}
               </h1>
               <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-mono">
                 {systemInfo?.model || 'GB-50ADA-A'} v{systemInfo?.version || '2.80'}
@@ -72,38 +70,28 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Global Quick Action Scenes */}
+        {/* Global Quick Action Batch Controls */}
         <div className="flex items-center flex-wrap gap-2">
           {!isViewer && (
             <>
               <button
-                onClick={() => onApplyPreset('sunday')}
+                onClick={() => onApplyPreset('all_on')}
                 disabled={loadingPreset}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30 text-xs font-semibold transition disabled:opacity-50"
-                title="Turn on all AC units to 70°F and Lossnays to High for Sunday Services"
+                title="Turn ON all indoor units to 70°F"
               >
-                <Sun className="w-3.5 h-3.5 text-emerald-400" />
-                Sunday Service (70°)
-              </button>
-
-              <button
-                onClick={() => onApplyPreset('office')}
-                disabled={loadingPreset}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/40 hover:bg-blue-600/30 text-xs font-semibold transition disabled:opacity-50"
-                title="Turn on Floor 1 office units (70°F), all other zones OFF"
-              >
-                <Briefcase className="w-3.5 h-3.5 text-blue-400" />
-                Weekday Office
+                <Power className="w-3.5 h-3.5 text-emerald-400" />
+                All Units ON
               </button>
 
               <button
                 onClick={() => onApplyPreset('all_off')}
                 disabled={loadingPreset}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600/30 text-xs font-semibold transition disabled:opacity-50"
-                title="Turn OFF all church HVAC & ventilation units"
+                title="Turn OFF all configured HVAC and ventilation units"
               >
                 <Power className="w-3.5 h-3.5 text-rose-400" />
-                All Off
+                All Units OFF
               </button>
             </>
           )}
@@ -159,7 +147,7 @@ export const Header: React.FC<HeaderProps> = ({
 
               <button
                 onClick={logout}
-                title="Sign out of church HVAC gateway"
+                title="Sign out of HVAC management gateway"
                 className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-transparent hover:border-rose-500/20 transition"
               >
                 <LogOut className="w-4 h-4" />

@@ -94,7 +94,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // --- Subtab 1: System Data State ---
   const [sysForm, setSysForm] = useState({
-    system_name: systemInfo?.system_name || 'Example Facility',
+    system_name: systemInfo?.system_name || 'GB-50 Central Controller',
     location_id: systemInfo?.location_id || '000001',
     ip_address: systemInfo?.ip_address || '192.0.2.90',
     subnet_mask: systemInfo?.subnet_mask || '255.255.255.0',
@@ -1582,7 +1582,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               Night Setback Temperature Drift Automation
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Maintain church rooms within unoccupied safety bounds during off-hours to prevent pipe freezes or overheating.
+              Maintain indoor zones within unoccupied safety bounds during off-hours to prevent pipe freezes or overheating.
             </p>
           </div>
 
@@ -1793,7 +1793,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 Proxy Gateway User Accounts & Role Permissions
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                Manage church staff access accounts, passwords, and assigned roles (Administrator, Parish Operator, Viewer).
+                Manage user access accounts, passwords, and assigned roles (Administrator, Operator, Viewer).
               </p>
             </div>
 
@@ -1921,7 +1921,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       type="text"
                       value={newUserForm.username}
                       onChange={(e) => setNewUserForm({ ...newUserForm, username: e.target.value })}
-                      placeholder="e.g. pastor_john, facilities_tom"
+                      placeholder="e.g. jdoe, facility_op"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                       required
                     />
@@ -1933,7 +1933,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       type="text"
                       value={newUserForm.display_name}
                       onChange={(e) => setNewUserForm({ ...newUserForm, display_name: e.target.value })}
-                      placeholder="e.g. John Doe (Pastor)"
+                      placeholder="e.g. John Doe"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                       required
                     />
@@ -1946,7 +1946,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value as UserRole })}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                     >
-                      <option value="operator">Parish Operator (Daily Controls & Presets)</option>
+                      <option value="operator">Operator (Daily Controls & Presets)</option>
                       <option value="viewer">Viewer (Read-Only Status / Kiosk)</option>
                       <option value="admin">Administrator (Full Access & Schedules)</option>
                     </select>
@@ -2018,7 +2018,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value as UserRole })}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                     >
-                      <option value="operator">Parish Operator (Daily Controls & Presets)</option>
+                      <option value="operator">Operator (Daily Controls & Presets)</option>
                       <option value="viewer">Viewer (Read-Only Status / Kiosk)</option>
                       <option value="admin">Administrator (Full Access & Schedules)</option>
                     </select>

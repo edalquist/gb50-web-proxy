@@ -538,7 +538,7 @@ async def apply_preset(
     mgr: StateManager = Depends(get_state_mgr),
     _user: Dict[str, Any] = Depends(require_role("operator")),
 ) -> List[GroupStatus]:
-    """Apply a one-touch church preset scene ('sunday', 'all_off', 'office', 'night')."""
+    """Apply a batch preset scene ('all_on', 'all_off', 'occupied', 'unoccupied')."""
     try:
         return await mgr.apply_preset(preset_name)
     except ValueError as vex:

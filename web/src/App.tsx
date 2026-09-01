@@ -99,7 +99,7 @@ export const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 gap-3">
         <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
-        <span className="text-xs font-semibold tracking-wider uppercase">Loading Example Facility HVAC Gateway...</span>
+        <span className="text-xs font-semibold tracking-wider uppercase">Loading GB-50 Centralized Gateway...</span>
       </div>
     );
   }
@@ -116,7 +116,7 @@ export const App: React.FC = () => {
     } else if (tab === 'ventilation') {
       goTo('/ventilation');
     } else if (tab === 'schedules') {
-      goTo('/schedules/' + (route.scheduleSubTab || 'programs'));
+      goTo('/schedules/' + (route.scheduleSubTab || 'planner'));
     } else if (tab === 'admin') {
       if (user?.role === 'admin') {
         goTo('/admin/' + (route.adminSubTab || 'system'));
@@ -142,7 +142,7 @@ export const App: React.FC = () => {
     await batchControl(updates);
   };
 
-  const handleApplyPreset = async (preset: 'sunday' | 'all_off' | 'office' | 'night') => {
+  const handleApplyPreset = async (preset: string) => {
     try {
       setLoadingPreset(true);
       await applyPreset(preset);

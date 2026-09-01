@@ -146,23 +146,6 @@ export interface GroupControlRequest {
   remote_lock?: 'PERMIT' | 'PROHIBIT';
 }
 
-export interface ActivityProgram {
-  id: string;
-  name: string;
-  description: string;
-  days: number[]; // 7=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
-  start_hour: number;
-  start_minute: number;
-  end_hour: number;
-  end_minute: number;
-  drive: 'ON' | 'OFF';
-  mode: OperationMode;
-  set_temp_f: number;
-  set_temp_c: number;
-  fan_speed: FanSpeed;
-  assigned_group_ids: number[];
-}
-
 export interface GroupConfigPayload {
   group_id?: number;
   name: string;

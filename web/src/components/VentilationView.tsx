@@ -55,9 +55,9 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
             LOSSNAY Fresh Air Energy Recovery Ventilators
           </h2>
           <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-            The church has configured LOSSNAY energy recovery ventilators (HRUs). These units bring in fresh outside air
-            while capturing heating/cooling energy from the exhaust air. They run automatically with paired fan coils or can
-            be manually set to <strong>Heat Recovery</strong> (full energy saving) or <strong>Bypass</strong> (free cooling with cool night air).
+            Dedicated LOSSNAY energy recovery ventilators (HRUs) bring in fresh outside air
+            while recovering heating and cooling energy from the exhaust air. They run interlocked with paired indoor fan coils or can
+            be manually set to <strong>Heat Recovery</strong> (energy saving) or <strong>Bypass</strong> (free cooling with cool outdoor air).
           </p>
         </div>
       </div>
@@ -85,7 +85,7 @@ export const VentilationView: React.FC<VentilationViewProps> = ({
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {((unit as { floor?: number }).floor ?? 1) === 1 ? 'Floor 1' : 'Floor 2'}
+                    {unit.floor ? `Floor ${unit.floor}` : ((unit as { floor?: number }).floor ?? 1) === 1 ? 'Floor 1' : 'Floor 2'}
                   </p>
                 </div>
 

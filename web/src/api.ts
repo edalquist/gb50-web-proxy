@@ -198,7 +198,7 @@ export async function batchControl(groups: Record<number, GroupControlRequest>):
   return res.json();
 }
 
-export async function applyPreset(presetName: 'sunday' | 'all_off' | 'office' | 'night'): Promise<GroupStatus[]> {
+export async function applyPreset(presetName: 'all_on' | 'all_off' | 'occupied' | 'unoccupied' | string): Promise<GroupStatus[]> {
   const res = await authFetch(`${API_BASE}/presets/${presetName}`, {
     method: 'POST',
   });

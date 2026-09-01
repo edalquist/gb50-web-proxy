@@ -100,7 +100,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <h3 className="font-bold text-slate-100 text-sm">Floor 1</h3>
             </div>
             <p className="text-xs text-slate-400 mt-1">
-              14 AC Units • <strong className="text-emerald-400">{floor1Groups.filter((g) => g.drive === 'ON').length} Active</strong>
+              {floor1Groups.length} Units • <strong className="text-emerald-400">{floor1Groups.filter((g) => g.drive === 'ON').length} Active</strong>
             </p>
           </div>
           {!isViewer && (
@@ -129,7 +129,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <h3 className="font-bold text-slate-100 text-sm">Floor 2</h3>
             </div>
             <p className="text-xs text-slate-400 mt-1">
-              12 AC Units • <strong className="text-emerald-400">{floor2Groups.filter((g) => g.drive === 'ON').length} Active</strong>
+              {floor2Groups.length} Units • <strong className="text-emerald-400">{floor2Groups.filter((g) => g.drive === 'ON').length} Active</strong>
             </p>
           </div>
           {!isViewer && (
@@ -155,10 +155,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <Wind className="w-4 h-4 text-teal-400" />
-              <h3 className="font-bold text-slate-100 text-sm">Ventilation (Lossnay HRUs)</h3>
+              <h3 className="font-bold text-slate-100 text-sm">Ventilation (LOSSNAY)</h3>
             </div>
             <p className="text-xs text-slate-400 mt-1">
-              4 Energy Recovery Units • <strong className="text-emerald-400">{lossnayGroups.filter((g) => g.drive === 'ON').length} Active</strong>
+              {lossnayGroups.length} Energy Recovery Units • <strong className="text-emerald-400">{lossnayGroups.filter((g) => g.drive === 'ON').length} Active</strong>
             </p>
           </div>
           <span className="text-xs px-2.5 py-1 bg-teal-500/10 text-teal-300 border border-teal-500/20 rounded-lg font-medium">

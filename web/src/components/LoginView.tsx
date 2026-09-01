@@ -55,13 +55,13 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
             <Building2 className="w-8 h-8" />
           </div>
           <h2 className="text-2xl font-black text-slate-100 tracking-tight">
-            Example Facility Church
+            GB-50 Centralized Controller
           </h2>
           <p className="text-sm font-semibold text-blue-400 mt-0.5">
-            Central HVAC Control Gateway
+            City Multi Management Gateway
           </p>
           <p className="text-xs text-slate-400 mt-2">
-            Enter your credentials to access church climate management.
+            Enter your credentials to access centralized HVAC management.
           </p>
         </div>
 
@@ -84,7 +84,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
                 autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin or staff username"
+                placeholder="Username (e.g. admin, staff)"
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
               />
             </div>
@@ -146,7 +146,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
             >
               <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Parish Operator</span>
+                <span>Operator</span>
               </div>
               <span className="text-[11px] text-slate-400 block mt-0.5 font-mono">staff / staff123</span>
             </button>

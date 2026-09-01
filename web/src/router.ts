@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 
 export type MainTab = 'dashboard' | 'ventilation' | 'schedules' | 'admin';
 export type AdminSubTab = 'system' | 'zones' | 'interlocks' | 'clock' | 'setback' | 'licenses' | 'security' | 'diagnostics';
-export type ScheduleSubTab = 'planner' | 'matrix';
+export type ScheduleSubTab = 'programs' | 'planner' | 'matrix';
 
 export interface RouteState {
   path: string;
@@ -40,11 +40,11 @@ export function parseLocation(): RouteState {
     };
   }
 
-  // 3. Schedules: /schedules, /schedules/planner, /schedules/matrix
+  // 3. Schedules: /schedules, /schedules/programs, /schedules/planner, /schedules/matrix
   if (path.startsWith('/schedules')) {
     const rawSub = path.split('/')[2];
-    const validSubs: ScheduleSubTab[] = ['planner', 'matrix'];
-    const scheduleSubTab: ScheduleSubTab = validSubs.includes(rawSub as any) ? (rawSub as ScheduleSubTab) : 'planner';
+    const validSubs: ScheduleSubTab[] = ['programs', 'planner', 'matrix'];
+    const scheduleSubTab: ScheduleSubTab = validSubs.includes(rawSub as any) ? (rawSub as ScheduleSubTab) : 'programs';
     return {
       path,
       tab: 'schedules',

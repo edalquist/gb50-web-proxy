@@ -195,3 +195,17 @@ export interface UpdateUserPayload {
   new_password?: string;
 }
 
+export interface ScheduleProgram {
+  id: number;
+  name: string;
+  description: string;
+  color: string;
+  weekly_pattern: Record<number, ScheduleItem[]>;
+  assigned_group_ids: number[];
+  sync_status: 'SYNCED' | 'DRIFT_DETECTED' | 'PENDING';
+  weekly_hours: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+

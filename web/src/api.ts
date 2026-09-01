@@ -3,6 +3,7 @@ import {
   SystemInfo, 
   GroupControlRequest, 
   ScheduleItem, 
+  ScheduleProgram,
   AlarmRecord,
   GroupConfigPayload,
   UnassignedAddressesResponse,
@@ -246,6 +247,103 @@ export async function updateWeeklySchedule(
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || `Failed to update weekly schedule: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+// --- Schedule Programs API (Schedule-First Architecture) ---
+
+export async function fetchSchedulePrograms(): Promise<ScheduleProgram[]> {
+  const res = await authFetch(`${API_BASE}/schedules/programs`);
+  if (!res.ok) throw new Error(`Failed to fetch schedule programs: ${res.statusText}`);
+  return res.json();
+}
+
+export async function createScheduleProgram(data: {
+  name: string;
+  description?: string;
+  color?: string;
+  weekly_pattern?: Record<number, any[]>;
+  assigned_group_ids?: number[];
+}): Promise<ScheduleProgram> {
+  const res = await authFetch(`${API_BASE}/schedules/programs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to create schedule program: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function updateScheduleProgram(
+  id: number,
+  data: {
+    name?: string;
+    description?: string;
+    color?: string;
+    weekly_pattern?: Record<number, any[]>;
+  }
+): Promise<ScheduleProgram> {
+  const res = await authFetch(`${API_BASE}/schedules/programs/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to update schedule program: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function deleteScheduleProgram(id: number): Promise<{ status: string; message: string }> {
+  const res = await authFetch(`${API_BASE}/schedules/programs/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to delete schedule program: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function assignZonesToProgram(
+  id: number,
+  groupIds: number[]
+): Promise<ScheduleProgram> {
+  const res = await authFetch(`${API_BASE}/schedules/programs/${id}/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group_ids: groupIds }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to assign zones to schedule program: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function pushScheduleProgramToHardware(id: number): Promise<{ status: string; message: string }> {
+  const res = await authFetch(`${API_BASE}/schedules/programs/${id}/push-to-hardware`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to push schedule to hardware: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function reconstructSchedulesFromHardware(): Promise<ScheduleProgram[]> {
+  const res = await authFetch(`${API_BASE}/schedules/reconstruct`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to reconstruct schedules: ${res.statusText}`);
   }
   return res.json();
 }

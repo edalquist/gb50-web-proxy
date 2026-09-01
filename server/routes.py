@@ -31,6 +31,13 @@ from .auth import (
     UpdateUserRequest,
     UserProfileResponse,
 )
+from .schedule_db import schedule_db
+from .schedule_sync import (
+    reconstruct_schedules_from_controller,
+    push_schedule_to_hardware,
+    check_schedule_drift,
+    calculate_weekly_runtime_hours,
+)
 
 logger = logging.getLogger("gb50.api")
 router = APIRouter(prefix="/api/v1")
@@ -167,6 +174,28 @@ class RenameGroupRequest(BaseModel):
 class UpdatePasswordRequest(BaseModel):
     """Payload to update a user password."""
     new_password: str = Field(..., min_length=3, max_length=10, description="New alphanumeric password")
+
+
+class CreateScheduleProgramRequest(BaseModel):
+    """Payload to create a new named schedule program."""
+    name: str = Field(..., min_length=1, max_length=50)
+    description: Optional[str] = Field("", max_length=200)
+    color: Optional[str] = Field("blue", max_length=20)
+    weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None
+    assigned_group_ids: Optional[List[int]] = Field(default_factory=list)
+
+
+class UpdateScheduleProgramRequest(BaseModel):
+    """Payload to update an existing named schedule program."""
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=200)
+    color: Optional[str] = Field(None, max_length=20)
+    weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None
+
+
+class AssignZonesRequest(BaseModel):
+    """Payload to assign HVAC zones to a schedule program."""
+    group_ids: List[int] = Field(default_factory=list)
 
 
 # --- Authentication Endpoints ---
@@ -578,97 +607,168 @@ async def update_interlocks(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.get("/schedules", summary="Get All Groups Today Schedules")
-async def get_all_schedules(mgr: StateManager = Depends(get_state_mgr)) -> Dict[int, List[ScheduleItem]]:
-    """Retrieve today's programmed timer events across all configured groups simultaneously."""
-    try:
-        return await mgr.client.get_all_today_schedules()
-    except Exception as ex:
-        logger.exception("Error in GET /api/v1/schedules: %s", ex)
-        raise HTTPException(status_code=500, detail=str(ex))
+# --- Schedule Programs (Schedule-First Architecture) ---
 
-
-@router.get("/schedules/{group_id}", response_model=List[ScheduleItem], summary="Get Group Today Schedule")
-async def get_schedule(group_id: int, mgr: StateManager = Depends(get_state_mgr)) -> List[ScheduleItem]:
-    """Retrieve today's programmed timer events for a specific group."""
-    try:
-        return await mgr.get_schedule(group_id)
-    except Exception as ex:
-        logger.exception("Error in GET /api/v1/schedules/%s: %s", group_id, ex)
-        raise HTTPException(status_code=500, detail=str(ex))
-
-
-@router.get("/schedules/{group_id}/weekly", summary="Get Group Weekly Schedule Patterns")
-async def get_weekly_schedule(
-    group_id: int,
-    season: int = 1,
+@router.get("/schedules/programs", summary="List All Named Schedule Programs")
+async def list_schedule_programs(
     mgr: StateManager = Depends(get_state_mgr),
-) -> Dict[int, List[ScheduleItem]]:
-    """Retrieve full 7-day weekly schedule patterns for a group (day 1=Monday .. 7=Sunday)."""
+) -> List[Dict[str, Any]]:
+    """Retrieve all named schedule programs, assigned zones, and sync status."""
     try:
-        return await mgr.client.get_weekly_schedule(group_id, season=season)
+        if schedule_db.count_schedules() == 0:
+            # Self-healing auto-reconstruct from controller hardware
+            progs = await reconstruct_schedules_from_controller(mgr.client)
+        else:
+            progs = schedule_db.list_schedules()
+        
+        # Calculate runtime hours for each program
+        for p in progs:
+            p["weekly_hours"] = calculate_weekly_runtime_hours(p["weekly_pattern"])
+        return progs
     except Exception as ex:
-        logger.exception("Error in GET /api/v1/schedules/%s/weekly: %s", group_id, ex)
+        logger.exception("Error in GET /api/v1/schedules/programs: %s", ex)
         raise HTTPException(status_code=500, detail=str(ex))
 
 
-@router.put("/schedules/today", summary="Update Today's Schedule for Group(s)")
-async def update_today_schedule(
-    request: UpdateTodayScheduleRequest,
+@router.post("/schedules/programs", summary="Create Named Schedule Program")
+async def create_schedule_program(
+    request: CreateScheduleProgramRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Create a new named schedule program and push to assigned controller zones."""
+    try:
+        prog = schedule_db.create_schedule(
+            name=request.name,
+            description=request.description or "",
+            color=request.color or "blue",
+            weekly_pattern=request.weekly_pattern or {d: [] for d in range(1, 8)},
+            assigned_group_ids=request.assigned_group_ids or [],
+        )
+        if request.assigned_group_ids:
+            await push_schedule_to_hardware(mgr.client, prog["id"])
+            prog = schedule_db.get_schedule(prog["id"])
+        prog["weekly_hours"] = calculate_weekly_runtime_hours(prog["weekly_pattern"])
+        return prog
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/programs: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.get("/schedules/programs/{program_id}", summary="Get Named Schedule Program Details")
+async def get_schedule_program_details(
+    program_id: int,
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[str, Any]:
+    """Retrieve detailed definition and assigned zones for a schedule program."""
+    prog = schedule_db.get_schedule(program_id)
+    if not prog:
+        raise HTTPException(status_code=404, detail="Schedule program not found")
+    prog["weekly_hours"] = calculate_weekly_runtime_hours(prog["weekly_pattern"])
+    return prog
+
+
+@router.put("/schedules/programs/{program_id}", summary="Update Named Schedule Program")
+async def update_schedule_program_details(
+    program_id: int,
+    request: UpdateScheduleProgramRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Update program metadata/pattern and write to controller hardware for assigned zones."""
+    try:
+        prog = schedule_db.update_schedule(
+            schedule_id=program_id,
+            name=request.name,
+            description=request.description,
+            color=request.color,
+            weekly_pattern=request.weekly_pattern,
+        )
+        if not prog:
+            raise HTTPException(status_code=404, detail="Schedule program not found")
+
+        # Push updated 7-day pattern to controller hardware for all assigned zones
+        if prog["assigned_group_ids"]:
+            await push_schedule_to_hardware(mgr.client, program_id)
+            prog = schedule_db.get_schedule(program_id)
+
+        prog["weekly_hours"] = calculate_weekly_runtime_hours(prog["weekly_pattern"])
+        return prog
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.exception("Error in PUT /api/v1/schedules/programs/%s: %s", program_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.delete("/schedules/programs/{program_id}", summary="Delete Named Schedule Program")
+async def delete_schedule_program_route(
+    program_id: int,
+    _role: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Delete a schedule program from the database."""
+    success = schedule_db.delete_schedule(program_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Schedule program not found")
+    return {"status": "success", "message": f"Deleted schedule program {program_id}"}
+
+
+@router.post("/schedules/programs/{program_id}/assign", summary="Assign Zones to Schedule Program")
+async def assign_zones_to_program_route(
+    program_id: int,
+    request: AssignZonesRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Assign HVAC zones to a schedule program and flash their hardware EEPROM."""
+    try:
+        prog = schedule_db.get_schedule(program_id)
+        if not prog:
+            raise HTTPException(status_code=404, detail="Schedule program not found")
+
+        schedule_db.assign_zones(program_id, request.group_ids)
+        if request.group_ids:
+            await push_schedule_to_hardware(mgr.client, program_id)
+
+        updated_prog = schedule_db.get_schedule(program_id)
+        updated_prog["weekly_hours"] = calculate_weekly_runtime_hours(updated_prog["weekly_pattern"])
+        return updated_prog
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/programs/%s/assign: %s", program_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.post("/schedules/programs/{program_id}/push-to-hardware", summary="Push Schedule Program to Controller EEPROM")
+async def push_program_hardware_route(
+    program_id: int,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Force-write schedule program to controller hardware across all assigned zones."""
+    try:
+        await push_schedule_to_hardware(mgr.client, program_id)
+        prog = schedule_db.get_schedule(program_id)
+        return {"status": "success", "message": f"Successfully pushed schedule to {len(prog['assigned_group_ids'])} zones on controller hardware"}
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/programs/%s/push-to-hardware: %s", program_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.post("/schedules/reconstruct", summary="Reconstruct Schedules from Controller Hardware")
+async def reconstruct_schedules_route(
     mgr: StateManager = Depends(get_state_mgr),
     _admin: Dict[str, Any] = Depends(require_role("admin")),
-) -> Dict[str, Any]:
-    """Update today's programmed timer events across one or more groups simultaneously."""
+) -> List[Dict[str, Any]]:
+    """Scan controller hardware, cluster weekly patterns, and refresh schedule programs."""
     try:
-        events_dicts = []
-        for ev in request.events:
-            events_dicts.append({
-                "hour": ev.hour,
-                "minute": ev.minute,
-                "drive": ev.drive,
-                "mode": ev.mode or "AUTO",
-                "set_temp_c": ev.resolved_temp_c(),
-                "fan_speed": ev.fan_speed or "AUTO",
-                "air_direction": ev.air_direction or "",
-            })
-        await mgr.client.set_today_schedule(request.group_ids, events_dicts)
-        return {
-            "status": "success",
-            "message": f"Updated today's schedule with {len(request.events)} events for {len(request.group_ids)} zones",
-        }
+        progs = await reconstruct_schedules_from_controller(mgr.client, force=True)
+        for p in progs:
+            p["weekly_hours"] = calculate_weekly_runtime_hours(p["weekly_pattern"])
+        return progs
     except Exception as ex:
-        logger.exception("Error in PUT /api/v1/schedules/today: %s", ex)
-        raise HTTPException(status_code=500, detail=str(ex))
-
-
-@router.put("/schedules/weekly", summary="Update Weekly Schedule for Group(s)")
-async def update_weekly_schedule(
-    request: UpdateWeeklyScheduleRequest,
-    mgr: StateManager = Depends(get_state_mgr),
-    _admin: Dict[str, Any] = Depends(require_role("admin")),
-) -> Dict[str, Any]:
-    """Update weekly schedule pattern for a specific day across one or more groups."""
-    try:
-        events_dicts = []
-        for ev in request.events:
-            events_dicts.append({
-                "hour": ev.hour,
-                "minute": ev.minute,
-                "drive": ev.drive,
-                "mode": ev.mode or "AUTO",
-                "set_temp_c": ev.resolved_temp_c(),
-                "fan_speed": ev.fan_speed or "AUTO",
-                "air_direction": ev.air_direction or "",
-            })
-        await mgr.client.set_weekly_schedule(request.group_ids, request.day_of_week, events_dicts)
-        day_names = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        day_name = day_names[request.day_of_week] if 1 <= request.day_of_week <= 7 else str(request.day_of_week)
-        return {
-            "status": "success",
-            "message": f"Updated {day_name} weekly schedule with {len(request.events)} events for {len(request.group_ids)} zones",
-        }
-    except Exception as ex:
-        logger.exception("Error in PUT /api/v1/schedules/weekly: %s", ex)
+        logger.exception("Error in POST /api/v1/schedules/reconstruct: %s", ex)
         raise HTTPException(status_code=500, detail=str(ex))
 
 

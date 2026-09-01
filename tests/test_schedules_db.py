@@ -1,0 +1,244 @@
+"""Unit and integration tests for Schedule-First Database Architecture and Hardware Sync."""
+
+import pytest
+import os
+import tempfile
+import httpx
+from datetime import datetime
+from unittest.mock import AsyncMock
+
+from server.schedule_db import ScheduleDatabase
+from server.schedule_sync import (
+    fingerprint_pattern,
+    calculate_weekly_runtime_hours,
+    generate_smart_name,
+    reconstruct_schedules_from_controller,
+    push_schedule_to_hardware,
+)
+from server.app import create_app
+from gb50.models import SystemInfo, GroupStatus, GroupCapabilities, ScheduleItem
+from gb50.constants import DriveState, OperationMode, AirDirection, FanSpeed, ModelType
+
+
+@pytest.fixture
+def temp_db():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    db = ScheduleDatabase(db_path=path)
+    yield db
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_schedule_db_crud(temp_db):
+    assert temp_db.count_schedules() == 0
+
+    # Create program
+    pattern = {
+        1: [{"hour": 8, "minute": 0, "drive": "ON", "mode": "AUTO", "set_temp_c": 21.5}],
+        2: [{"hour": 8, "minute": 0, "drive": "ON", "mode": "AUTO", "set_temp_c": 21.5}],
+        3: [],
+        4: [],
+        5: [],
+        6: [],
+        7: [],
+    }
+    prog = temp_db.create_schedule(
+        name="Test Program",
+        description="Test notes",
+        color="emerald",
+        weekly_pattern=pattern,
+        assigned_group_ids=[1, 2],
+    )
+    assert prog["id"] is not None
+    assert prog["name"] == "Test Program"
+    assert prog["color"] == "emerald"
+    assert prog["assigned_group_ids"] == [1, 2]
+    assert temp_db.count_schedules() == 1
+
+    # Get program
+    fetched = temp_db.get_schedule(prog["id"])
+    assert fetched is not None
+    assert fetched["name"] == "Test Program"
+    assert fetched["assigned_group_ids"] == [1, 2]
+
+    # Update program
+    updated = temp_db.update_schedule(
+        prog["id"],
+        name="Renamed Program",
+        description="Updated notes",
+        color="purple",
+    )
+    assert updated["name"] == "Renamed Program"
+    assert updated["color"] == "purple"
+
+    # Reassign zones
+    temp_db.assign_zones(prog["id"], [3, 4, 5])
+    refetched = temp_db.get_schedule(prog["id"])
+    assert refetched["assigned_group_ids"] == [3, 4, 5]
+
+    # Delete program
+    assert temp_db.delete_schedule(prog["id"]) is True
+    assert temp_db.count_schedules() == 0
+
+
+def test_pattern_fingerprinting_and_runtime():
+    empty_pat = {d: [] for d in range(1, 8)}
+    assert fingerprint_pattern(empty_pat) == "EMPTY_SCHEDULE"
+    assert calculate_weekly_runtime_hours(empty_pat) == 0.0
+
+    weekday_pat = {
+        1: [{"hour": 8, "minute": 0, "drive": "ON"}, {"hour": 17, "minute": 0, "drive": "OFF"}],
+        2: [{"hour": 8, "minute": 0, "drive": "ON"}, {"hour": 17, "minute": 0, "drive": "OFF"}],
+        3: [{"hour": 8, "minute": 0, "drive": "ON"}, {"hour": 17, "minute": 0, "drive": "OFF"}],
+        4: [{"hour": 8, "minute": 0, "drive": "ON"}, {"hour": 17, "minute": 0, "drive": "OFF"}],
+        5: [{"hour": 8, "minute": 0, "drive": "ON"}, {"hour": 17, "minute": 0, "drive": "OFF"}],
+        6: [],
+        7: [],
+    }
+    fp = fingerprint_pattern(weekday_pat)
+    assert fp != "EMPTY_SCHEDULE"
+    assert len(fp) == 16
+    # 9 hours * 5 days = 45.0 hours
+    assert calculate_weekly_runtime_hours(weekday_pat) == 45.0
+
+    name, desc = generate_smart_name(weekday_pat, 6)
+    assert "Weekday Routine" in name
+    assert "08:00 - 17:00" in name
+    assert "6 zones" in desc
+
+
+@pytest.mark.asyncio
+async def test_self_healing_reconstruction():
+    from server.schedule_db import schedule_db
+
+    # Mock client
+    mock_client = AsyncMock()
+    mock_groups = [
+        GroupStatus(
+            group_id=1, name="Room 101", model=ModelType.IC, address=1,
+            slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+            air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+            schedule_enabled=True, filter_dirty=False, error_active=False,
+            capabilities=GroupCapabilities(),
+        ),
+        GroupStatus(
+            group_id=2, name="Room 102", model=ModelType.IC, address=2,
+            slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+            air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+            schedule_enabled=True, filter_dirty=False, error_active=False,
+            capabilities=GroupCapabilities(),
+        ),
+        GroupStatus(
+            group_id=3, name="Storage", model=ModelType.IC, address=3,
+            slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+            air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+            schedule_enabled=True, filter_dirty=False, error_active=False,
+            capabilities=GroupCapabilities(),
+        ),
+    ]
+    mock_client.get_all_groups = AsyncMock(return_value=mock_groups)
+
+    # Zones 1 & 2 share a schedule; Zone 3 is empty
+    sample_sched = {
+        1: [ScheduleItem(index=1, hour=8, minute=0, drive=DriveState.ON, mode=OperationMode.AUTO, set_temp_c=21.0, time_str="08:00")],
+        2: [ScheduleItem(index=1, hour=8, minute=0, drive=DriveState.ON, mode=OperationMode.AUTO, set_temp_c=21.0, time_str="08:00")],
+        3: [], 4: [], 5: [], 6: [], 7: [],
+    }
+    empty_sched = {d: [] for d in range(1, 8)}
+
+    async def _mock_get_weekly(gid):
+        return sample_sched if gid in (1, 2) else empty_sched
+
+    mock_client.get_weekly_schedule = AsyncMock(side_effect=_mock_get_weekly)
+
+    # Trigger reconstruction
+    progs = await reconstruct_schedules_from_controller(mock_client, force=True)
+    assert len(progs) == 2  # 1 active schedule + 1 standby schedule
+
+    active_prog = next(p for p in progs if set(p["assigned_group_ids"]) == {1, 2})
+    assert active_prog is not None
+    assert "Weekday" in active_prog["name"] or "Schedule" in active_prog["name"]
+
+    standby_prog = next(p for p in progs if set(p["assigned_group_ids"]) == {3})
+    assert standby_prog is not None
+    assert "Standby" in standby_prog["name"] or "Unscheduled" in standby_prog["name"]
+
+
+@pytest.mark.asyncio
+async def test_rest_api_programs_endpoints():
+    app = create_app(controller_host="192.0.2.90", poll_interval=60.0)
+    mock_client = app.state.client
+    mock_client.get_system_info = AsyncMock(return_value=SystemInfo(
+        version="2.80", model="GB-50ADA-A", serial_number="123", system_name="HQ HVAC",
+        location_id="001", ip_address="192.0.2.90", subnet_mask="255.255.255.0",
+        gateway="192.0.2.1", mac_address="001122334455", mnet_address=0, temp_unit="F",
+        licensed_functions={},
+    ))
+    mock_client.get_all_groups = AsyncMock(return_value=[
+        GroupStatus(
+            group_id=1, name="Zone 1", model=ModelType.IC, address=1,
+            slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+            air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+            schedule_enabled=True, filter_dirty=False, error_active=False,
+            capabilities=GroupCapabilities(),
+        )
+    ])
+    mock_client.get_weekly_schedule = AsyncMock(return_value={d: [] for d in range(1, 8)})
+    mock_client.set_weekly_schedule = AsyncMock(return_value=True)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # Login as Admin
+        login_resp = await client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login_resp.status_code == 200
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. List programs (triggers auto-reconstruct if empty)
+        list_resp = await client.get("/api/v1/schedules/programs", headers=headers)
+        assert list_resp.status_code == 200
+        progs = list_resp.json()
+        assert len(progs) >= 1
+
+        # 2. Create program
+        create_resp = await client.post(
+            "/api/v1/schedules/programs",
+            headers=headers,
+            json={
+                "name": "Custom Office Hours",
+                "description": "Mon-Fri 8am-5pm",
+                "color": "blue",
+                "weekly_pattern": {
+                    "1": [{"hour": 8, "minute": 0, "drive": "ON", "set_temp_f": 72.0}]
+                },
+                "assigned_group_ids": [1],
+            },
+        )
+        assert create_resp.status_code == 200
+        created = create_resp.json()
+        assert created["name"] == "Custom Office Hours"
+        assert created["assigned_group_ids"] == [1]
+
+        # 3. Assign zones
+        assign_resp = await client.post(
+            f"/api/v1/schedules/programs/{created['id']}/assign",
+            headers=headers,
+            json={"group_ids": [1]},
+        )
+        assert assign_resp.status_code == 200
+
+        # 4. Push to hardware
+        push_resp = await client.post(
+            f"/api/v1/schedules/programs/{created['id']}/push-to-hardware",
+            headers=headers,
+        )
+        assert push_resp.status_code == 200
+        assert push_resp.json()["status"] == "success"
+
+        # 5. Delete program
+        del_resp = await client.delete(
+            f"/api/v1/schedules/programs/{created['id']}",
+            headers=headers,
+        )
+        assert del_resp.status_code == 200

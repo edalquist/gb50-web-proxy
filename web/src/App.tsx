@@ -248,7 +248,7 @@ export const App: React.FC = () => {
       {/* Footer */}
       <footer className="bg-slate-950 border-t border-slate-900 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>Example Facility HVAC Control Gateway • Mitsubishi GB-50ADA-A</span>
+          <span>{systemInfo?.system_name || 'GB-50 Central Controller'} • {systemInfo?.model || 'Mitsubishi GB-50'}</span>
           <span>REST API & WebSocket Proxy v1.0.0</span>
         </div>
       </footer>

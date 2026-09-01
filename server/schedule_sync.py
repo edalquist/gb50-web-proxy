@@ -110,20 +110,21 @@ def generate_smart_name(
         time_span = f" from {sample_on_time}"
 
     temp_note = f" at {sample_temp_f}°F" if sample_temp_f else ""
+    temp_suffix = f" ({sample_temp_f}°F)" if sample_temp_f else ""
 
     if is_weekdays:
-        name = f"Weekday Routine{time_span}"
+        name = f"Weekday Routine{time_span}{temp_suffix}"
         desc = f"Active Monday through Friday{temp_note} ({group_count} zones)"
     elif is_all_week:
-        name = f"Daily Routine{time_span}"
+        name = f"Daily Routine{time_span}{temp_suffix}"
         desc = f"Active 7 days a week{temp_note} ({group_count} zones)"
     elif is_weekend:
-        name = f"Weekend Routine{time_span}"
+        name = f"Weekend Routine{time_span}{temp_suffix}"
         desc = f"Active Saturday/Sunday{temp_note} ({group_count} zones)"
     else:
         day_labels = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
         day_str = "/".join(day_labels[d] for d in active_days[:3])
-        name = f"{day_str} Schedule{time_span}"
+        name = f"{day_str} Schedule{time_span}{temp_suffix}"
         desc = f"Custom weekly routine ({group_count} zones)"
 
     return name, desc

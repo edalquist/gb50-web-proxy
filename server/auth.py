@@ -16,8 +16,19 @@ from fastapi import Request, HTTPException, Depends, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
+import logging
+
+_logger = logging.getLogger("gb50.auth")
+
 # Secret key for JWT signature
-JWT_SECRET = os.getenv("GB50_JWT_SECRET") or secrets.token_urlsafe(32)
+_env_secret = os.getenv("GB50_JWT_SECRET")
+if _env_secret:
+    JWT_SECRET = _env_secret
+else:
+    # Use deterministic key in dev or generate ephemeral secure secret
+    JWT_SECRET = os.getenv("GB50_JWT_SECRET_FALLBACK", secrets.token_urlsafe(32))
+    _logger.info("GB50_JWT_SECRET not provided; initialized secure secret key.")
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24 * 7  # 7 days session
 
@@ -126,16 +137,22 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
 # --- Database Repository ---
 
 class UserDatabase:
-    """SQLite User Repository."""
+    """SQLite User Repository with WAL concurrency support."""
 
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
         return conn
+
+    def init_db(self):
+        """Public alias to initialize or seed database tables."""
+        self._init_db()
 
     def _init_db(self):
         """Create tables and seed initial admin user if empty."""
@@ -186,7 +203,7 @@ class UserDatabase:
                         "staff",
                         hash_password(secrets.token_urlsafe(16)),
                         "operator",
-                        "Parish Office Staff",
+                        "Facility Operator",
                         now_str,
                     ),
                 )

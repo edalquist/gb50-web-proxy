@@ -134,9 +134,10 @@ class ScheduleEventInput(BaseModel):
 
     def resolved_temp_c(self) -> Optional[float]:
         if self.set_temp_c is not None:
-            return self.set_temp_c
+            return round(self.set_temp_c * 2) / 2
         if self.set_temp_f is not None:
-            return round((self.set_temp_f - 32.0) * 5.0 / 9.0, 1)
+            raw_c = (self.set_temp_f - 32.0) * 5.0 / 9.0
+            return round(raw_c * 2) / 2
         return None
 
 
@@ -837,8 +838,25 @@ async def change_controller_user_password(
 # --- WebSocket Stream ---
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket) -> None:
-    """WebSocket stream providing real-time group telemetry change events."""
+async def websocket_endpoint(
+    websocket: WebSocket,
+    token: Optional[str] = None,
+) -> None:
+    """Authenticated WebSocket stream providing real-time group telemetry change events."""
+    # Extract token from query parameter or cookie
+    auth_token = token or websocket.cookies.get("gb50_token")
+    if not auth_token:
+        # Check subprotocols or headers if present
+        auth_header = websocket.headers.get("authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            auth_token = auth_header.split(" ", 1)[1].strip()
+
+    payload = decode_access_token(auth_token) if auth_token else None
+    if not payload:
+        logger.warning("Rejecting unauthenticated WebSocket connection attempt from %s", websocket.client)
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     mgr: StateManager = websocket.app.state.state_manager
     await websocket.accept()
     mgr.register_ws(websocket)

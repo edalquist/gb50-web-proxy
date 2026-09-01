@@ -323,8 +323,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
   // Filter for Matrix view
   const filteredMatrixGroups = groups.filter((g) => {
-    if (matrixFilter === 'floor1') return ((g as { floor?: number }).floor ?? 1) === 1;
-    if (matrixFilter === 'floor2') return ((g as { floor?: number }).floor ?? 1) === 2;
+    if (matrixFilter === 'floor1') return (g.floor === 1 || (!g.floor && ((g as { floor?: number }).floor ?? 1) === 1));
+    if (matrixFilter === 'floor2') return (g.floor === 2 || (!g.floor && ((g as { floor?: number }).floor ?? 1) === 2));
     if (matrixFilter === 'ventilation') return g.model === 'LC';
     return true;
   });

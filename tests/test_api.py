@@ -194,3 +194,28 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         if kiosk:
             del_resp = await client.delete(f"/api/v1/users/{kiosk['id']}", headers=admin_headers)
             assert del_resp.status_code == 200
+
+
+def test_temperature_snapping_and_database_init():
+    from server.routes import ScheduleEventInput
+    from server.auth import user_db
+
+    # Test half-degree Celsius snapping
+    ev1 = ScheduleEventInput(hour=8, minute=0, drive="ON", set_temp_f=70.0)
+    # (70 - 32) * 5 / 9 = 21.111 -> snapped to 21.0
+    assert ev1.resolved_temp_c() == 21.0
+
+    ev2 = ScheduleEventInput(hour=8, minute=0, drive="ON", set_temp_f=72.0)
+    # (72 - 32) * 5 / 9 = 22.222 -> snapped to 22.0
+    assert ev2.resolved_temp_c() == 22.0
+
+    ev3 = ScheduleEventInput(hour=8, minute=0, drive="ON", set_temp_c=21.4)
+    # 21.4 -> snapped to 21.5
+    assert ev3.resolved_temp_c() == 21.5
+
+    # Test user_db init_db public alias
+    user_db.init_db()
+    users = user_db.list_users()
+    assert len(users) >= 1
+    assert any(u["username"] == "admin" for u in users)
+

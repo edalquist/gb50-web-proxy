@@ -125,13 +125,14 @@ class ScheduleDatabase:
             assignment_rows = cursor.fetchall()
             assignments_map: Dict[int, List[int]] = {}
             status_map: Dict[int, str] = {}
+            status_priority = {"ERROR": 4, "DRIFT_DETECTED": 3, "PENDING": 2, "SYNCED": 1}
             for a in assignment_rows:
                 sched_id = a["schedule_id"]
                 assignments_map.setdefault(sched_id, []).append(a["group_id"])
-                if a["sync_status"] == "DRIFT_DETECTED":
-                    status_map[sched_id] = "DRIFT_DETECTED"
-                elif a["sync_status"] == "PENDING" and status_map.get(sched_id) != "DRIFT_DETECTED":
-                    status_map[sched_id] = "PENDING"
+                curr_st = status_map.get(sched_id, "SYNCED")
+                new_st = a["sync_status"] or "SYNCED"
+                if status_priority.get(new_st, 0) > status_priority.get(curr_st, 0):
+                    status_map[sched_id] = new_st
 
             results = []
             for row in rows:
@@ -172,13 +173,12 @@ class ScheduleDatabase:
             )
             assign_rows = cursor.fetchall()
             assigned_groups = [r["group_id"] for r in assign_rows]
+            status_priority = {"ERROR": 4, "DRIFT_DETECTED": 3, "PENDING": 2, "SYNCED": 1}
             sync_status = "SYNCED"
             for r in assign_rows:
-                if r["sync_status"] == "DRIFT_DETECTED":
-                    sync_status = "DRIFT_DETECTED"
-                    break
-                elif r["sync_status"] == "PENDING":
-                    sync_status = "PENDING"
+                st = r["sync_status"] or "SYNCED"
+                if status_priority.get(st, 0) > status_priority.get(sync_status, 0):
+                    sync_status = st
 
             pattern = json.loads(row["pattern_json"])
             int_pattern = {int(k): v for k, v in pattern.items()}
@@ -195,19 +195,39 @@ class ScheduleDatabase:
                 "updated_at": row["updated_at"],
             }
 
+    def _serialize_pattern(self, weekly_pattern: Optional[Dict[Any, Any]]) -> str:
+        """Convert weekly pattern dict with Pydantic models or dicts to JSON string."""
+        if weekly_pattern is None:
+            weekly_pattern = {d: [] for d in range(1, 8)}
+        str_pattern: Dict[str, List[Dict[str, Any]]] = {}
+        for k, v in weekly_pattern.items():
+            events_list = []
+            for ev in (v or []):
+                if hasattr(ev, "model_dump"):
+                    d = ev.model_dump(exclude_unset=True)
+                    if hasattr(ev, "resolved_temp_c"):
+                        resolved = ev.resolved_temp_c()
+                        if resolved is not None:
+                            d["set_temp_c"] = resolved
+                            d["set_temp_f"] = round((resolved * 9.0 / 5.0) + 32.0, 1)
+                    events_list.append(d)
+                elif isinstance(ev, dict):
+                    events_list.append(dict(ev))
+                else:
+                    events_list.append(ev)
+            str_pattern[str(k)] = events_list
+        return json.dumps(str_pattern)
+
     def create_schedule(
         self,
         name: str,
         description: str = "",
         color: str = "blue",
-        weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+        weekly_pattern: Optional[Dict[Any, Any]] = None,
         assigned_group_ids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """Create a new named schedule program and optional initial assignments."""
-        if weekly_pattern is None:
-            weekly_pattern = {d: [] for d in range(1, 8)}
-
-        str_pattern = {str(k): v for k, v in weekly_pattern.items()}
+        pattern_json = self._serialize_pattern(weekly_pattern)
         now_str = datetime.now(timezone.utc).isoformat()
 
         with self._get_connection() as conn:
@@ -217,7 +237,7 @@ class ScheduleDatabase:
                 INSERT INTO schedules (name, description, color, pattern_json, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (name.strip(), description.strip(), color.strip(), json.dumps(str_pattern), now_str, now_str),
+                (name.strip(), description.strip(), color.strip(), pattern_json, now_str, now_str),
             )
             schedule_id = cursor.lastrowid
 
@@ -240,7 +260,7 @@ class ScheduleDatabase:
         name: Optional[str] = None,
         description: Optional[str] = None,
         color: Optional[str] = None,
-        weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+        weekly_pattern: Optional[Dict[Any, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Update an existing schedule program."""
         existing = self.get_schedule(schedule_id)
@@ -261,9 +281,8 @@ class ScheduleDatabase:
             updates.append("color = ?")
             params.append(color.strip())
         if weekly_pattern is not None:
-            str_pattern = {str(k): v for k, v in weekly_pattern.items()}
             updates.append("pattern_json = ?")
-            params.append(json.dumps(str_pattern))
+            params.append(self._serialize_pattern(weekly_pattern))
 
         updates.append("updated_at = ?")
         params.append(now_str)

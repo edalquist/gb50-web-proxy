@@ -389,3 +389,170 @@ async def test_schedule_sync_status_lifecycle_and_foreign_keys(temp_db):
         sync_module.schedule_db = old_db
 
 
+@pytest.mark.asyncio
+async def test_schedule_sync_pacing_and_delays(temp_db):
+    from unittest.mock import patch
+    from server.schedule_sync import sync_group_hardware, push_schedule_to_hardware
+    import server.schedule_sync as sync_module
+
+    old_db = sync_module.schedule_db
+    sync_module.schedule_db = temp_db
+
+    try:
+        prog = temp_db.create_schedule(
+            name="Paced Program",
+            weekly_pattern={1: [{"hour": 8, "minute": 0, "drive": "ON"}]},
+            assigned_group_ids=[1, 2],
+        )
+
+        mock_client = AsyncMock()
+        mock_client.set_weekly_schedule.return_value = True
+
+        sleep_calls = []
+
+        async def _mock_sleep(duration):
+            sleep_calls.append(duration)
+
+        with patch("server.schedule_sync.asyncio.sleep", side_effect=_mock_sleep):
+            # Test sync_group_hardware paces 7 day uploads with 0.04s delay
+            await sync_group_hardware(mock_client, group_id=1)
+            assert len(sleep_calls) == 7
+            assert all(d == 0.04 for d in sleep_calls)
+
+            # Test push_schedule_to_hardware calls sync for each group and paces between groups
+            sleep_calls.clear()
+            await push_schedule_to_hardware(mock_client, schedule_id=prog["id"])
+            # 2 groups * 7 days (14 sleeps in sync_group_hardware) + 2 sleeps in push_schedule_to_hardware = 16 sleeps
+            assert len(sleep_calls) == 16
+            assert all(d == 0.04 for d in sleep_calls)
+    finally:
+        sync_module.schedule_db = old_db
+
+
+@pytest.mark.asyncio
+async def test_sync_status_precedence_and_aggregation(temp_db):
+    """Verify strict priority ordering: ERROR > DRIFT_DETECTED > PENDING > SYNCED."""
+    prog = temp_db.create_schedule(
+        name="Multi Zone Program",
+        weekly_pattern={1: [{"hour": 8, "minute": 0, "drive": "ON"}]},
+        assigned_group_ids=[1, 2, 3],
+    )
+    pid = prog["id"]
+
+    # All 3 SYNCED => program SYNCED
+    temp_db.set_sync_status(1, "SYNCED", pid)
+    temp_db.set_sync_status(2, "SYNCED", pid)
+    temp_db.set_sync_status(3, "SYNCED", pid)
+    assert temp_db.get_schedule(pid)["sync_status"] == "SYNCED"
+
+    # One PENDING => program PENDING
+    temp_db.set_sync_status(2, "PENDING", pid)
+    assert temp_db.get_schedule(pid)["sync_status"] == "PENDING"
+
+    # One DRIFT_DETECTED beats PENDING => program DRIFT_DETECTED
+    temp_db.set_sync_status(3, "DRIFT_DETECTED", pid)
+    assert temp_db.get_schedule(pid)["sync_status"] == "DRIFT_DETECTED"
+
+    # One ERROR beats DRIFT_DETECTED and PENDING => program ERROR
+    temp_db.set_sync_status(1, "ERROR", pid)
+    assert temp_db.get_schedule(pid)["sync_status"] == "ERROR"
+
+
+@pytest.mark.asyncio
+async def test_reconstruct_schedules_atomic_abort_on_read_failure(temp_db):
+    """Reconstruct must abort atomically without corrupting/wiping DB if reading a group fails."""
+    from server.schedule_sync import reconstruct_schedules_from_controller
+    from gb50.protocol import GB50ProtocolError
+    import server.schedule_sync as sync_module
+
+    old_db = sync_module.schedule_db
+    sync_module.schedule_db = temp_db
+
+    try:
+        # Create an existing program
+        existing = temp_db.create_schedule(
+            name="Existing Sanctuary",
+            weekly_pattern={1: [{"hour": 9, "minute": 0, "drive": "ON"}]},
+            assigned_group_ids=[1],
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get_all_groups.return_value = [
+            GroupStatus(
+                group_id=1, name="Zone 1", model=ModelType.IC, address=1,
+                slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+                air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+                schedule_enabled=True, filter_dirty=False, error_active=False,
+                capabilities=GroupCapabilities(),
+            ),
+            GroupStatus(
+                group_id=2, name="Zone 2", model=ModelType.IC, address=2,
+                slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+                air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+                schedule_enabled=True, filter_dirty=False, error_active=False,
+                capabilities=GroupCapabilities(),
+            ),
+        ]
+
+        async def _mock_get_weekly(gid, season=1):
+            if gid == 1:
+                return {d: [] for d in range(1, 8)}
+            raise RuntimeError("Controller connection reset on group 2")
+
+        mock_client.get_weekly_schedule.side_effect = _mock_get_weekly
+
+        with pytest.raises(GB50ProtocolError, match="Failed to read weekly schedule for group 2"):
+            await reconstruct_schedules_from_controller(mock_client, force=True)
+
+        # Ensure existing program in SQLite was NOT wiped/corrupted
+        programs = temp_db.list_schedules()
+        assert len(programs) == 1
+        assert programs[0]["name"] == "Existing Sanctuary"
+    finally:
+        sync_module.schedule_db = old_db
+
+
+@pytest.mark.asyncio
+async def test_merge_and_sync_with_none_drive_and_enums(tmp_path):
+    """Verify merging and flashing schedules when drive/mode/fan fields are None or omitted."""
+    import server.schedule_sync as sync_module
+    from server.schedule_sync import merge_programs_for_group, sync_group_hardware
+
+    db_file = str(tmp_path / "test_schedules_none.db")
+    temp_db = ScheduleDatabase(db_path=db_file)
+    old_db = sync_module.schedule_db
+    sync_module.schedule_db = temp_db
+
+    try:
+        # Create program with None drive and enums
+        prog = temp_db.create_schedule(
+            name="Loose Schema Program",
+            weekly_pattern={
+                1: [
+                    {"hour": 8, "minute": 0, "drive": None, "mode": None, "fan_speed": None, "set_temp_f": 70.0},
+                    {"hour": 17, "minute": 0, "drive": "OFF", "mode": None, "fan_speed": None},
+                ]
+            },
+            assigned_group_ids=[1],
+        )
+
+        merged, warnings = merge_programs_for_group([prog["id"]])
+        assert len(merged[1]) == 2
+        assert merged[1][0]["drive"] == "ON"  # Defaulted from None
+        assert merged[1][0]["mode"] == "AUTO"  # Defaulted from None
+        assert merged[1][1]["drive"] == "OFF"
+
+        mock_client = AsyncMock()
+        mock_client.set_weekly_schedule.return_value = True
+        mock_client.get_weekly_schedule.return_value = {d: [] for d in range(1, 8)}
+
+        # Flashing should succeed without raising Invalid drive state
+        success = await sync_group_hardware(mock_client, group_id=1)
+        assert mock_client.set_weekly_schedule.call_count == 7
+    finally:
+        sync_module.schedule_db = old_db
+
+
+
+
+

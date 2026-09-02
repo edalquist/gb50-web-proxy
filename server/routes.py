@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, status
 from pydantic import BaseModel, Field, field_validator
@@ -48,6 +48,47 @@ router = APIRouter(prefix="/api/v1")
 def get_state_mgr(websocket_or_request: Any = None) -> StateManager:
     """Dependency injector for StateManager instance (set on app.state)."""
     raise NotImplementedError
+
+
+def _validate_no_address_collisions(
+    topology: Dict[int, Dict[str, Any]],
+    target_group_id: Optional[int],
+    primary_ic: int,
+    slave_ics: Optional[List[int]] = None,
+) -> None:
+    """Ensure primary and slave addresses are unique across all controller groups."""
+    slaves = slave_ics or []
+    if len(slaves) != len(set(slaves)):
+        raise HTTPException(status_code=400, detail="Duplicate addresses specified in slave units.")
+    if primary_ic in slaves:
+        raise HTTPException(status_code=400, detail=f"Primary address {primary_ic} cannot also be listed as a slave unit.")
+
+    all_assigned: Dict[int, int] = {}
+    for gid, meta in topology.items():
+        if target_group_id is not None and gid == target_group_id:
+            continue
+        primary = meta.get("address")
+        if primary is not None:
+            all_assigned[primary] = gid
+        for s in meta.get("slaves", []):
+            all_assigned[s] = gid
+
+    if primary_ic in all_assigned:
+        colliding_gid = all_assigned[primary_ic]
+        colliding_name = topology.get(colliding_gid, {}).get("name", f"Group {colliding_gid}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Primary address {primary_ic} is already assigned to Group {colliding_gid} ('{colliding_name}')."
+        )
+    for s in slaves:
+        if s in all_assigned:
+            colliding_gid = all_assigned[s]
+            colliding_name = topology.get(colliding_gid, {}).get("name", f"Group {colliding_gid}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Slave address {s} is already assigned to Group {colliding_gid} ('{colliding_name}')."
+            )
+
 
 
 # --- Request Models ---
@@ -183,7 +224,7 @@ class CreateScheduleProgramRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
     description: Optional[str] = Field("", max_length=200)
     color: Optional[str] = Field("blue", max_length=20)
-    weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None
+    weekly_pattern: Optional[Dict[int, List[Union[ScheduleEventInput, Dict[str, Any]]]]] = None
     assigned_group_ids: Optional[List[int]] = Field(default_factory=list)
 
     @field_validator("weekly_pattern")
@@ -203,7 +244,7 @@ class UpdateScheduleProgramRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50)
     description: Optional[str] = Field(None, max_length=200)
     color: Optional[str] = Field(None, max_length=20)
-    weekly_pattern: Optional[Dict[int, List[Dict[str, Any]]]] = None
+    weekly_pattern: Optional[Dict[int, List[Union[ScheduleEventInput, Dict[str, Any]]]]] = None
 
     @field_validator("weekly_pattern")
     @classmethod
@@ -278,11 +319,13 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)) -> Us
 async def change_own_password(
     request: ChangePasswordRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
+    mgr: StateManager = Depends(get_state_mgr),
 ) -> Dict[str, str]:
     """Change the password for the current authenticated user."""
     if not verify_password(request.old_password, current_user["password_hash"]):
         raise HTTPException(status_code=400, detail="Incorrect current password.")
     user_db.update_user(current_user["id"], new_password=request.new_password)
+    await mgr.disconnect_user(current_user["id"])
     return {"status": "success", "message": "Password updated successfully."}
 
 
@@ -336,6 +379,7 @@ async def create_proxy_user(
 async def update_proxy_user(
     user_id: int,
     request: UpdateUserRequest,
+    mgr: StateManager = Depends(get_state_mgr),
     _admin: Dict[str, Any] = Depends(require_role("admin")),
 ) -> UserProfileResponse:
     """Update a proxy user's role, display name, status, or password."""
@@ -349,6 +393,8 @@ async def update_proxy_user(
         enabled=request.enabled,
         new_password=request.new_password,
     )
+    if request.new_password or request.enabled is False or request.role:
+        await mgr.disconnect_user(user_id)
     return UserProfileResponse(
         id=user["id"],
         username=user["username"],
@@ -364,6 +410,7 @@ async def update_proxy_user(
 async def delete_proxy_user(
     user_id: int,
     admin: Dict[str, Any] = Depends(require_role("admin")),
+    mgr: StateManager = Depends(get_state_mgr),
 ) -> Dict[str, str]:
     """Delete a proxy user account."""
     if user_id == admin["id"]:
@@ -371,6 +418,7 @@ async def delete_proxy_user(
     success = user_db.delete_user(user_id)
     if not success:
         raise HTTPException(status_code=404, detail="User not found.")
+    await mgr.disconnect_user(user_id)
     return {"status": "success", "message": "User deleted successfully."}
 
 
@@ -497,7 +545,15 @@ async def create_group(
         groups = await mgr.get_all_groups()
         if any(g.group_id == request.group_id for g in groups):
             raise HTTPException(status_code=400, detail=f"Group ID {request.group_id} already exists.")
-        
+
+        topology = await mgr.client.get_topology(force_refresh=True)
+        _validate_no_address_collisions(
+            topology=topology,
+            target_group_id=None,
+            primary_ic=request.primary_ic,
+            slave_ics=request.slave_ics,
+        )
+
         await mgr.client.set_group_topology(
             group_id=request.group_id,
             name=request.name,
@@ -529,6 +585,14 @@ async def configure_group_hardware(
 ) -> Dict[str, Any]:
     """Configure a group's display name, primary IC address, slave ICs, remote controllers (RC), and floor."""
     try:
+        topology = await mgr.client.get_topology(force_refresh=True)
+        _validate_no_address_collisions(
+            topology=topology,
+            target_group_id=group_id,
+            primary_ic=request.primary_ic,
+            slave_ics=request.slave_ics,
+        )
+
         await mgr.client.set_group_topology(
             group_id=group_id,
             name=request.name,
@@ -540,6 +604,8 @@ async def configure_group_hardware(
         )
         await mgr.poll_now()
         return {"status": "success", "message": f"Group {group_id} hardware topology updated"}
+    except HTTPException:
+        raise
     except Exception as ex:
         logger.exception("Error in PUT /api/v1/groups/%s/config: %s", group_id, ex)
         raise HTTPException(status_code=500, detail=str(ex))
@@ -748,12 +814,22 @@ async def update_schedule_program_details(
 @router.delete("/schedules/programs/{program_id}", summary="Delete Named Schedule Program")
 async def delete_schedule_program_route(
     program_id: int,
+    mgr: StateManager = Depends(get_state_mgr),
     _role: Dict[str, Any] = Depends(require_role("admin")),
 ) -> Dict[str, Any]:
-    """Delete a schedule program from the database."""
+    """Delete a schedule program from the database and re-sync orphaned zones."""
+    prog = schedule_db.get_schedule(program_id)
+    if not prog:
+        raise HTTPException(status_code=404, detail="Schedule program not found")
+    affected_gids = list(prog["assigned_group_ids"])
     success = schedule_db.delete_schedule(program_id)
     if not success:
         raise HTTPException(status_code=404, detail="Schedule program not found")
+    for gid in affected_gids:
+        try:
+            await sync_group_hardware(mgr.client, gid)
+        except Exception as ex:
+            logger.warning("Could not re-sync group %s after program deletion: %s", gid, ex)
     return {"status": "success", "message": f"Deleted schedule program {program_id}"}
 
 
@@ -770,9 +846,15 @@ async def assign_zones_to_program_route(
         if not prog:
             raise HTTPException(status_code=404, detail="Schedule program not found")
 
+        old_gids = set(prog["assigned_group_ids"])
+        new_gids = set(request.group_ids)
         schedule_db.assign_zones(program_id, request.group_ids)
-        if request.group_ids:
-            await push_schedule_to_hardware(mgr.client, program_id)
+        all_affected = old_gids | new_gids
+        for gid in all_affected:
+            try:
+                await sync_group_hardware(mgr.client, gid)
+            except Exception as ex:
+                logger.warning("Could not sync group %s after assignment: %s", gid, ex)
 
         updated_prog = schedule_db.get_schedule(program_id)
         updated_prog["weekly_hours"] = calculate_weekly_runtime_hours(updated_prog["weekly_pattern"])
@@ -1128,7 +1210,7 @@ async def get_controller_users(
         users = []
         for cat in ["Administrator", "Maintenance", "PublicUser"]:
             try:
-                cat_users = await mgr.client.get_users(cat, include_passwords=False)
+                cat_users = await mgr.client.get_users(cat)
                 users.extend(cat_users)
             except Exception as uex:
                 logger.debug("Could not fetch user category %s: %s", cat, uex)
@@ -1185,7 +1267,7 @@ async def websocket_endpoint(
 
     mgr: StateManager = websocket.app.state.state_manager
     await websocket.accept()
-    mgr.register_ws(websocket)
+    mgr.register_ws(websocket, user_id=user["id"])
     
     try:
         groups = await mgr.get_all_groups()

@@ -26,10 +26,11 @@ import {
   GroupStatus, 
   SystemInfo, 
   AlarmRecord, 
-  GroupConfigPayload,
-  UserProfile,
-  UserRole
+  GroupConfigPayload, 
+  UserProfile, 
+  UserRole 
 } from '../types';
+import { DestructiveConfirmModal } from './DestructiveConfirmModal';
 import { 
   fetchAlarms, 
   clearAlarms,
@@ -587,6 +588,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [alarms, setAlarms] = useState<AlarmRecord[]>([]);
   const [alarmFilter, setAlarmFilter] = useState<'all' | 'active' | 'resolved' | 'sensors' | 'power' | 'comm'>('all');
   const [isClearingAlarms, setIsClearingAlarms] = useState(false);
+  const [isClearAlarmsModalOpen, setIsClearAlarmsModalOpen] = useState(false);
   const [alarmMsg, setAlarmMsg] = useState<string | null>(null);
 
   const loadAlarms = async () => {
@@ -598,13 +600,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const handleClearAlarmHistory = async () => {
-    if (!confirm('Are you sure you want to clear the resolved malfunction history from the controller memory?')) return;
+  const executeClearAlarmHistory = async () => {
     setIsClearingAlarms(true);
     setAlarmMsg(null);
     try {
       const res = await clearAlarms();
       setAlarmMsg(res.message);
+      setIsClearAlarmsModalOpen(false);
       await loadAlarms();
     } catch (err: any) {
       setAlarmMsg(`Error: ${err.message}`);
@@ -1222,45 +1224,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           )}
 
-          {/* MODAL 3: Delete Group Confirmation Dialog */}
-          {deleteConfirmGroup && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-              <div className="bg-slate-900 border border-rose-500/40 rounded-3xl w-full max-w-md shadow-2xl p-6 space-y-4">
-                <div className="flex items-center gap-3 text-rose-400">
-                  <div className="p-3 bg-rose-500/10 rounded-2xl border border-rose-500/20">
-                    <AlertTriangle className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h3 className="font-extrabold text-base text-white">Delete Group {deleteConfirmGroup.group_id}?</h3>
-                    <p className="text-xs text-slate-400">"{deleteConfirmGroup.name}"</p>
-                  </div>
-                </div>
-
-                <p className="text-xs text-slate-300 leading-relaxed bg-slate-950 p-3.5 rounded-xl border border-slate-800">
-                  This will unassign physical M-NET address <strong className="text-white">Address {deleteConfirmGroup.address}</strong> and clear this group's name and schedules from the GB-50 controller memory.
+          {/* MODAL 3: Delete Group 2-Step Confirmation Dialog */}
+          <DestructiveConfirmModal
+            isOpen={!!deleteConfirmGroup}
+            title={`Delete Group ${deleteConfirmGroup?.group_id}?`}
+            itemName={deleteConfirmGroup?.name || `Zone ${deleteConfirmGroup?.group_id}`}
+            confirmButtonText="Yes, Permanently Delete Group"
+            confirmInputPlaceholder={`Type "${deleteConfirmGroup?.name || `Zone ${deleteConfirmGroup?.group_id}`}"`}
+            isLoading={isDeletingGroup}
+            description={
+              <>
+                <p>
+                  This will unassign physical M-NET address <strong className="text-white">Address {deleteConfirmGroup?.address}</strong> and clear this group's configuration and schedule mappings from the GB-50 controller memory.
                 </p>
-
-                <div className="flex items-center justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setDeleteConfirmGroup(null)}
-                    disabled={isDeletingGroup}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDeleteGroup}
-                    disabled={isDeletingGroup}
-                    className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-950 disabled:opacity-50"
-                  >
-                    {isDeletingGroup ? 'Deleting...' : 'Yes, Delete Group'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+                <p className="text-rose-400 font-medium pt-1">
+                  Warning: All schedules linked to this zone will be detached.
+                </p>
+              </>
+            }
+            onConfirm={handleDeleteGroup}
+            onClose={() => setDeleteConfirmGroup(null)}
+          />
         </div>
       )}
 
@@ -2073,37 +2057,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           )}
 
-          {/* Modal 3: Delete Confirmation */}
-          {deleteConfirmUser && (
-            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4 text-center">
-                <div className="w-12 h-12 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
-                  <Trash2 className="w-6 h-6" />
-                </div>
-                <h4 className="font-bold text-slate-100 text-base">Delete User Account?</h4>
-                <p className="text-xs text-slate-400">
-                  Are you sure you want to delete user <strong className="text-white">@{deleteConfirmUser.username}</strong> ({deleteConfirmUser.display_name})? This action cannot be undone.
+          {/* Modal 3: Delete User 2-Step Confirmation */}
+          <DestructiveConfirmModal
+            isOpen={!!deleteConfirmUser}
+            title={`Delete User Account @${deleteConfirmUser?.username}?`}
+            itemName={deleteConfirmUser?.username || ''}
+            confirmButtonText="Permanently Delete User"
+            confirmInputPlaceholder={`Type "${deleteConfirmUser?.username}"`}
+            isLoading={isSavingUser}
+            description={
+              <>
+                <p>
+                  Are you sure you want to permanently delete user account <strong className="text-white">@{deleteConfirmUser?.username}</strong> ({deleteConfirmUser?.display_name})?
                 </p>
-                <div className="flex justify-center gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setDeleteConfirmUser(null)}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDeleteUser}
-                    disabled={isSavingUser}
-                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold"
-                  >
-                    {isSavingUser ? 'Deleting...' : 'Confirm Delete'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+                <p className="text-rose-400 font-medium pt-1">
+                  Warning: Any active sessions and WebSockets for this account will be terminated immediately. This action cannot be undone.
+                </p>
+              </>
+            }
+            onConfirm={handleDeleteUser}
+            onClose={() => setDeleteConfirmUser(null)}
+          />
         </div>
       )}
 
@@ -2152,14 +2126,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <RefreshCw className="w-3.5 h-3.5" /> Refresh
                 </button>
                 <button
-                  onClick={handleClearAlarmHistory}
+                  onClick={() => setIsClearAlarmsModalOpen(true)}
                   disabled={isClearingAlarms || alarms.length === 0}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-900/60 hover:bg-rose-800 text-rose-200 text-xs font-bold rounded-xl transition disabled:opacity-40"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-900/60 hover:bg-rose-800 text-rose-200 text-xs font-bold rounded-xl transition disabled:opacity-40 cursor-pointer"
                 >
                   <Trash2 className="w-3.5 h-3.5" /> {isClearingAlarms ? 'Clearing...' : 'Clear Resolved History'}
                 </button>
               </div>
             </div>
+
+            {/* 2-Step Clear Alarm History Confirmation Modal */}
+            <DestructiveConfirmModal
+              isOpen={isClearAlarmsModalOpen}
+              title="Clear Malfunction & Error History?"
+              itemName="CLEAR"
+              confirmButtonText="Clear Controller Malfunction History"
+              confirmInputPlaceholder="Type CLEAR to confirm"
+              isLoading={isClearingAlarms}
+              description={
+                <>
+                  <p>
+                    This will permanently clear all resolved malfunction and historical diagnostic logs stored in the GB-50 controller memory.
+                  </p>
+                  <p className="text-amber-400 font-medium pt-1">
+                    Note: Unresolved active faults will remain displayed until physically resolved.
+                  </p>
+                </>
+              }
+              onConfirm={executeClearAlarmHistory}
+              onClose={() => setIsClearAlarmsModalOpen(false)}
+            />
 
             {alarmMsg && (
               <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs font-semibold text-emerald-300">

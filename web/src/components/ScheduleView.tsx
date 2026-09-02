@@ -38,6 +38,7 @@ import {
   fetchZoneMergedSchedule
 } from '../api';
 import { useAuth } from '../AuthContext';
+import { DestructiveConfirmModal } from './DestructiveConfirmModal';
 
 interface ScheduleViewProps {
   groups: GroupStatus[];
@@ -119,6 +120,9 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const [assignFilterFloor, setAssignFilterFloor] = useState<'all' | 'floor1' | 'floor2' | 'lossnay'>('all');
 
   const [editingProgram, setEditingProgram] = useState<ScheduleProgram | null>(null);
+  const [deleteConfirmProgram, setDeleteConfirmProgram] = useState<ScheduleProgram | null>(null);
+  const [isDeletingProgram, setIsDeletingProgram] = useState(false);
+  const [isReconstructModalOpen, setIsReconstructModalOpen] = useState(false);
   const [isCreateProgramOpen, setIsCreateProgramOpen] = useState(false);
   const [programFormName, setProgramFormName] = useState('');
   const [programFormDesc, setProgramFormDesc] = useState('');
@@ -404,14 +408,14 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     }
   };
 
-  const handleReconstructHardware = async () => {
-    if (!confirm("This will scan all 50 zones on the GB-50 controller, cluster identical weekly patterns, and refresh schedule programs. Continue?")) return;
+  const executeReconstructHardware = async () => {
     setLoadingPrograms(true);
     setStatusMsg(null);
     try {
       const refreshed = await reconstructSchedulesFromHardware();
       setPrograms(refreshed);
       await loadPrograms();
+      setIsReconstructModalOpen(false);
       setStatusMsg(`Successfully reconstructed ${refreshed.length} schedule programs from controller hardware.`);
     } catch (err: any) {
       setStatusMsg(`Error reconstructing schedules: ${err.message}`);
@@ -420,15 +424,19 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     }
   };
 
-  const handleDeleteProgram = async (progId: number) => {
-    if (!confirm("Are you sure you want to delete this schedule program? Assigned zones will remain on their current hardware schedule.")) return;
+  const executeDeleteProgram = async () => {
+    if (!deleteConfirmProgram) return;
+    setIsDeletingProgram(true);
     try {
-      await deleteScheduleProgram(progId);
-      setPrograms((prev) => prev.filter((p) => p.id !== progId));
+      await deleteScheduleProgram(deleteConfirmProgram.id);
+      setPrograms((prev) => prev.filter((p) => p.id !== deleteConfirmProgram.id));
+      setDeleteConfirmProgram(null);
       await loadPrograms();
-      setStatusMsg("Schedule program deleted.");
+      setStatusMsg(`Schedule program '${deleteConfirmProgram.name}' deleted.`);
     } catch (err: any) {
       setStatusMsg(`Error deleting program: ${err.message}`);
+    } finally {
+      setIsDeletingProgram(false);
     }
   };
 
@@ -802,9 +810,9 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
             <div className="flex items-center gap-3">
               <button
-                onClick={handleReconstructHardware}
+                onClick={() => setIsReconstructModalOpen(true)}
                 disabled={loadingPrograms || !isAdmin}
-                className="flex items-center gap-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition disabled:opacity-50"
+                className="flex items-center gap-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition disabled:opacity-50 cursor-pointer"
                 title="Scan controller hardware and auto-cluster routines"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${loadingPrograms ? 'animate-spin' : ''}`} />
@@ -852,6 +860,16 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                               <AlertTriangle className="w-3 h-3" /> Drift Detected
                             </span>
                           )}
+                          {prog.sync_status === 'ERROR' && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-300 border border-red-500/30 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" /> Sync Failed
+                            </span>
+                          )}
+                          {prog.sync_status === 'PENDING' && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">
+                              <RefreshCw className="w-3 h-3" /> Pending Sync
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-1 text-slate-400">
@@ -866,8 +884,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                           )}
                           {isAdmin && (
                             <button
-                              onClick={() => handleDeleteProgram(prog.id)}
-                              className="p-1.5 hover:bg-slate-800 hover:text-red-400 rounded-lg transition"
+                              onClick={() => setDeleteConfirmProgram(prog)}
+                              className="p-1.5 hover:bg-slate-800 hover:text-red-400 rounded-lg transition cursor-pointer"
                               title="Delete program"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -2183,6 +2201,50 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* 2-Step Delete Program Confirmation Modal */}
+      <DestructiveConfirmModal
+        isOpen={!!deleteConfirmProgram}
+        title={`Delete Schedule Program '${deleteConfirmProgram?.name}'?`}
+        itemName={deleteConfirmProgram?.name || ''}
+        confirmButtonText="Permanently Delete Program"
+        confirmInputPlaceholder={`Type "${deleteConfirmProgram?.name}"`}
+        isLoading={isDeletingProgram}
+        description={
+          <>
+            <p>
+              This will permanently delete schedule program <strong className="text-white font-bold">'{deleteConfirmProgram?.name}'</strong> from the proxy database.
+            </p>
+            <p className="text-rose-400 font-medium pt-1">
+              Note: Subscribed zones ({deleteConfirmProgram?.assigned_group_ids.length || 0}) will retain their active EEPROM timer schedules on the controller until reassigned or modified.
+            </p>
+          </>
+        }
+        onConfirm={executeDeleteProgram}
+        onClose={() => setDeleteConfirmProgram(null)}
+      />
+
+      {/* 2-Step Scan & Reconstruct Ground Truth Confirmation Modal */}
+      <DestructiveConfirmModal
+        isOpen={isReconstructModalOpen}
+        title="Scan & Reconstruct Schedules from Hardware Truth?"
+        itemName="RECONSTRUCT"
+        confirmButtonText="Scan & Reconstruct Database"
+        confirmInputPlaceholder="Type RECONSTRUCT to confirm"
+        isLoading={loadingPrograms}
+        description={
+          <>
+            <p>
+              This will query all 50 physical zones on the GB-50 controller, identify distinct weekly schedule routines, cluster identical patterns into named programs, and rebuild the database from hardware ground truth.
+            </p>
+            <p className="text-amber-400 font-medium pt-1">
+              Warning: Any unassigned or conflicting local program definitions will be replaced with actual controller state.
+            </p>
+          </>
+        }
+        onConfirm={executeReconstructHardware}
+        onClose={() => setIsReconstructModalOpen(false)}
+      />
     </div>
   );
 };

@@ -11,6 +11,7 @@ from datetime import datetime
 
 from gb50.client import GB50Client
 from gb50.models import ScheduleItem, GroupStatus
+from gb50.exceptions import GB50ProtocolError
 from .schedule_db import schedule_db, ScheduleProgramModel
 
 logger = logging.getLogger("gb50.schedule_sync")
@@ -191,17 +192,41 @@ def merge_programs_for_group(
             elif temp_f is not None and temp_c is None:
                 temp_c = round(((temp_f - 32.0) * 5.0 / 9.0) * 2.0) / 2.0
 
+            drive_val = ev.get("drive")
+            if hasattr(drive_val, "value"):
+                drive_val = drive_val.value
+            elif not drive_val:
+                drive_val = "ON"
+
+            mode_val = ev.get("mode")
+            if hasattr(mode_val, "value"):
+                mode_val = mode_val.value
+            elif not mode_val:
+                mode_val = "AUTO"
+
+            fan_val = ev.get("fan_speed")
+            if hasattr(fan_val, "value"):
+                fan_val = fan_val.value
+            elif not fan_val:
+                fan_val = "AUTO"
+
+            air_val = ev.get("air_direction")
+            if hasattr(air_val, "value"):
+                air_val = air_val.value
+            elif not air_val:
+                air_val = ""
+
             clean_events.append({
                 "index": idx,
                 "hour": ev.get("hour", 0),
                 "minute": ev.get("minute", 0),
                 "time_str": f"{ev.get('hour', 0):02d}:{ev.get('minute', 0):02d}",
-                "drive": ev.get("drive", "ON"),
-                "mode": ev.get("mode", "AUTO"),
+                "drive": drive_val,
+                "mode": mode_val,
                 "set_temp_c": temp_c,
                 "set_temp_f": temp_f,
-                "fan_speed": ev.get("fan_speed", "AUTO"),
-                "air_direction": ev.get("air_direction", ""),
+                "fan_speed": fan_val,
+                "air_direction": air_val,
                 "source_program_id": ev.get("_source_program_id"),
                 "source_program_name": ev.get("_source_program_name"),
             })
@@ -215,6 +240,7 @@ async def sync_group_hardware(client: GB50Client, group_id: int) -> bool:
     """Recompute merged weekly pattern from all assigned programs and flash group hardware EEPROM."""
     program_ids = schedule_db.get_program_ids_for_group(group_id)
     merged_pattern, _warnings = merge_programs_for_group(program_ids)
+    expected_fp = fingerprint_pattern(merged_pattern)
 
     logger.info(f"Flashing merged schedule ({len(program_ids)} programs) to group {group_id} across all 7 days...")
     try:
@@ -225,6 +251,42 @@ async def sync_group_hardware(client: GB50Client, group_id: int) -> bool:
                 day_of_week=day,
                 events=events,
             )
+            await asyncio.sleep(0.04)
+
+        # Read-back verification
+        try:
+            hw_items = await client.get_weekly_schedule(group_id)
+        except Exception as rex:
+            logger.warning(f"Could not read back weekly schedule for group {group_id}: {rex}")
+            hw_items = None
+
+        if isinstance(hw_items, dict):
+            hw_dict = {}
+            for day, items in hw_items.items():
+                if isinstance(items, (list, tuple)):
+                    hw_dict[day] = [
+                        {
+                            "hour": getattr(item, "hour", item.get("hour") if isinstance(item, dict) else 0),
+                            "minute": getattr(item, "minute", item.get("minute") if isinstance(item, dict) else 0),
+                            "drive": (getattr(getattr(item, "drive", None), "value", None) or getattr(item, "drive", None) or (item.get("drive") if isinstance(item, dict) else "OFF") or "OFF"),
+                            "mode": (getattr(getattr(item, "mode", None), "value", None) or getattr(item, "mode", None) or (item.get("mode") if isinstance(item, dict) else "AUTO") or "AUTO"),
+                            "set_temp_c": getattr(item, "set_temp_c", item.get("set_temp_c") if isinstance(item, dict) else None),
+                            "set_temp_f": round((getattr(item, "set_temp_c", item.get("set_temp_c") if isinstance(item, dict) else None) * 9.0 / 5.0) + 32.0, 1)
+                            if getattr(item, "set_temp_c", item.get("set_temp_c") if isinstance(item, dict) else None) is not None
+                            else None,
+                            "fan_speed": (getattr(getattr(item, "fan_speed", None), "value", None) or getattr(item, "fan_speed", None) or (item.get("fan_speed") if isinstance(item, dict) else "") or ""),
+                            "air_direction": (getattr(getattr(item, "air_direction", None), "value", None) or getattr(item, "air_direction", None) or (item.get("air_direction") if isinstance(item, dict) else "") or ""),
+                        }
+                        for item in items
+                    ]
+            hw_fp = fingerprint_pattern(hw_dict)
+            if hw_fp != expected_fp:
+                logger.warning(
+                    f"Read-back fingerprint mismatch for group {group_id} after flashing: expected {expected_fp}, got {hw_fp}"
+                )
+                schedule_db.set_sync_status(group_id, "DRIFT_DETECTED")
+                return False
+
         schedule_db.set_sync_status(group_id, "SYNCED")
         return True
     except Exception as ex:
@@ -260,19 +322,19 @@ async def reconstruct_schedules_from_controller(
                     {
                         "hour": item.hour,
                         "minute": item.minute,
-                        "drive": item.drive,
-                        "mode": item.mode,
+                        "drive": item.drive.value if hasattr(item.drive, "value") else (item.drive or "OFF"),
+                        "mode": item.mode.value if hasattr(item.mode, "value") else (item.mode or "AUTO"),
                         "set_temp_c": item.set_temp_c,
                         "set_temp_f": round((item.set_temp_c * 9.0 / 5.0) + 32.0, 1) if item.set_temp_c else None,
-                        "fan_speed": item.fan_speed,
-                        "air_direction": item.air_direction,
+                        "fan_speed": item.fan_speed.value if hasattr(item.fan_speed, "value") else (item.fan_speed or ""),
+                        "air_direction": item.air_direction.value if hasattr(item.air_direction, "value") else (item.air_direction or ""),
                     }
                     for item in items
                 ]
             group_patterns[g.group_id] = p_dict
         except Exception as ex:
-            logger.warning(f"Could not fetch weekly schedule for group {g.group_id}: {ex}")
-            group_patterns[g.group_id] = {d: [] for d in range(1, 8)}
+            logger.error(f"Cannot reconstruct schedules: failed to read weekly schedule for group {g.group_id} ({g.name}): {ex}")
+            raise GB50ProtocolError(f"Failed to read weekly schedule for group {g.group_id} ({g.name}): {ex}") from ex
         await asyncio.sleep(0.04)
 
     clusters: Dict[str, List[int]] = {}
@@ -326,6 +388,7 @@ async def push_schedule_to_hardware(client: GB50Client, schedule_id: int) -> boo
     logger.info(f"Re-syncing {len(gids)} groups subscribed to program '{prog['name']}'...")
     for gid in gids:
         await sync_group_hardware(client, gid)
+        await asyncio.sleep(0.04)
 
     return True
 

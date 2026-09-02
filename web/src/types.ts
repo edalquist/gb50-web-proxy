@@ -204,7 +204,7 @@ export interface ScheduleProgram {
   color: string;
   weekly_pattern: Record<number, ScheduleItem[]>;
   assigned_group_ids: number[];
-  sync_status: 'SYNCED' | 'DRIFT_DETECTED' | 'PENDING';
+  sync_status: 'SYNCED' | 'DRIFT_DETECTED' | 'PENDING' | 'ERROR';
   weekly_hours: number;
   created_at?: string;
   updated_at?: string;

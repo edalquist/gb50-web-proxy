@@ -191,9 +191,14 @@ class UserDatabase:
                 env_password = os.getenv("GB50_ADMIN_PASSWORD")
                 if env_password:
                     admin_password = env_password
+                elif os.getenv("GB50_INITIAL_ADMIN_PASSWORD"):
+                    admin_password = os.getenv("GB50_INITIAL_ADMIN_PASSWORD")
                 else:
-                    # Deterministic admin/admin for default local testing unless specified
-                    admin_password = os.getenv("GB50_INITIAL_ADMIN_PASSWORD") or secrets.token_urlsafe(16)
+                    admin_password = secrets.token_urlsafe(16)
+                    _logger.warning("=" * 70)
+                    _logger.warning("GENERATED INITIAL ADMIN BOOTSTRAP PASSWORD: %s", admin_password)
+                    _logger.warning("Please save this password or set GB50_ADMIN_PASSWORD in environment.")
+                    _logger.warning("=" * 70)
 
                 now_str = datetime.now(timezone.utc).isoformat()
                 cursor.execute(

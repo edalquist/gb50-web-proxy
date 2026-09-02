@@ -65,6 +65,7 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
     app.state.client.get_alarms = AsyncMock(return_value=[AlarmRecord(index=1, address=1, error_code="0000", unit_model="IC", priority_level=2, message="Normal")])
     app.state.client.get_datetime = AsyncMock(return_value=datetime(2026, 8, 29, 22, 0, 0))
     app.state.client.set_datetime = AsyncMock(return_value=True)
+    app.state.client.get_topology = AsyncMock(return_value={})
     
     # Initialize state manager cache
     app.state.state_manager._system_info = mock_system_info
@@ -191,6 +192,26 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         # 8. Admin Control Operations
         app.state.client.set_group_topology = AsyncMock(return_value=True)
         app.state.client.delete_group = AsyncMock(return_value=True)
+        app.state.client.set_system_info = AsyncMock(return_value=True)
+        app.state.client.register_option = AsyncMock(return_value=True)
+
+        # Admin updating system info (exercises mgr.refresh_system_info)
+        put_sys_resp = await client.put(
+            "/api/v1/system",
+            headers=admin_headers,
+            json={"system_name": "Updated Cathedral"},
+        )
+        assert put_sys_resp.status_code == 200
+        assert put_sys_resp.json()["status"] == "success"
+
+        # Admin registering option license (exercises mgr.refresh_system_info)
+        opt_resp = await client.post(
+            "/api/v1/options/register",
+            headers=admin_headers,
+            json={"func_index": 1, "key_code": "1234567890ABCDEF"},
+        )
+        assert opt_resp.status_code == 200
+        assert opt_resp.json()["status"] == "success"
 
         resp = await client.post(
             "/api/v1/groups",
@@ -292,4 +313,70 @@ async def test_token_revocation_on_password_change_and_disable(mock_system_info,
 
         # Clean up
         await client.delete(f"/api/v1/users/{uid}", headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_mnet_address_collision_rejection(mock_system_info, mock_group):
+    """Ensure duplicate M-Net addresses or collisions with existing groups are rejected."""
+    app = create_app(controller_host="192.0.2.90", poll_interval=60.0)
+    app.state.client.get_system_info = AsyncMock(return_value=mock_system_info)
+    app.state.client.get_all_groups = AsyncMock(return_value=[mock_group])
+    app.state.client.get_topology = AsyncMock(return_value={
+        1: {"name": "Zone 1", "address": 1, "model": "IC", "slaves": [2], "rcs": [], "floor": 1},
+        2: {"name": "Zone 2", "address": 5, "model": "IC", "slaves": [], "rcs": [], "floor": 1},
+    })
+    app.state.client.set_group_topology = AsyncMock(return_value=True)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        login_resp = await client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login_resp.status_code == 200
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Primary address colliding with existing Group 1 primary
+        resp = await client.post(
+            "/api/v1/groups",
+            headers=headers,
+            json={"group_id": 3, "name": "Zone 3", "primary_ic": 1},
+        )
+        assert resp.status_code == 400
+        assert "Primary address 1 is already assigned to Group 1" in resp.json()["detail"]
+
+        # 2. Slave address colliding with existing Group 1 slave
+        resp = await client.post(
+            "/api/v1/groups",
+            headers=headers,
+            json={"group_id": 3, "name": "Zone 3", "primary_ic": 10, "slave_ics": [2]},
+        )
+        assert resp.status_code == 400
+        assert "Slave address 2 is already assigned to Group 1" in resp.json()["detail"]
+
+        # 3. Duplicate slave addresses in the request itself
+        resp = await client.post(
+            "/api/v1/groups",
+            headers=headers,
+            json={"group_id": 3, "name": "Zone 3", "primary_ic": 10, "slave_ics": [11, 11]},
+        )
+        assert resp.status_code == 400
+        assert "Duplicate addresses specified" in resp.json()["detail"]
+
+        # 4. Primary listed as slave
+        resp = await client.post(
+            "/api/v1/groups",
+            headers=headers,
+            json={"group_id": 3, "name": "Zone 3", "primary_ic": 10, "slave_ics": [10]},
+        )
+        assert resp.status_code == 400
+        assert "Primary address 10 cannot also be listed as a slave" in resp.json()["detail"]
+
+        # 5. Non-colliding addresses succeed
+        resp = await client.post(
+            "/api/v1/groups",
+            headers=headers,
+            json={"group_id": 3, "name": "Zone 3", "primary_ic": 10, "slave_ics": [11]},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "success"
+
 

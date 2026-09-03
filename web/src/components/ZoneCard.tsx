@@ -20,6 +20,10 @@ interface ZoneCardProps {
   onTogglePower: (group: GroupStatus) => void;
   onOpenDetails: (group: GroupStatus) => void;
   onResetFilter: (groupId: number) => void;
+  isSelectionMode?: boolean;
+  isSelected?: boolean;
+  isDisabledSelection?: boolean;
+  onToggleSelect?: (group: GroupStatus) => void;
 }
 
 export const ZoneCard: React.FC<ZoneCardProps> = ({
@@ -28,6 +32,10 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
   onTogglePower,
   onOpenDetails,
   onResetFilter,
+  isSelectionMode = false,
+  isSelected = false,
+  isDisabledSelection = false,
+  onToggleSelect,
 }) => {
   const { user } = useAuth();
   const isViewer = user?.role === 'viewer';
@@ -67,10 +75,23 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
   const currentTemp = tempUnit === 'F' ? group.inlet_temp_f : group.inlet_temp_c;
   const targetTemp = tempUnit === 'F' ? group.set_temp_f : group.set_temp_c;
 
+  const handleCardClick = () => {
+    if (isSelectionMode) {
+      if (!isDisabledSelection && onToggleSelect) {
+        onToggleSelect(group);
+      }
+    }
+  };
+
   return (
     <div
+      onClick={handleCardClick}
       className={`relative rounded-2xl border transition-all duration-200 overflow-hidden flex flex-col justify-between ${
-        isRunning
+        isSelectionMode ? (isDisabledSelection ? 'cursor-not-allowed opacity-40' : 'cursor-pointer') : ''
+      } ${
+        isSelected
+          ? 'bg-blue-950/40 border-blue-500 ring-2 ring-blue-500/50 shadow-lg shadow-blue-950/40'
+          : isRunning
           ? 'bg-slate-900/90 border-slate-700/80 shadow-lg shadow-black/20 hover:border-slate-600'
           : 'bg-slate-900/40 border-slate-800/60 opacity-85 hover:opacity-100 hover:border-slate-700'
       }`}
@@ -78,18 +99,33 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
       {/* Top Section */}
       <div className="p-4 pb-2">
         <div className="flex items-start justify-between gap-2 mb-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-bold text-base text-slate-100 leading-tight truncate">
-                {group.name}
-              </h3>
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
-                Gr.{group.group_id} / M{group.address}
-              </span>
+          <div className="flex items-start gap-2.5">
+            {/* Selection Checkbox */}
+            {isSelectionMode && (
+              <div className="pt-0.5">
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  disabled={isDisabledSelection}
+                  onChange={() => !isDisabledSelection && onToggleSelect?.(group)}
+                  className="w-4 h-4 rounded bg-slate-800 border-slate-600 text-blue-600 focus:ring-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                  title={isDisabledSelection ? 'Device type does not match current selection' : 'Select for Bulk Edit'}
+                />
+              </div>
+            )}
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-base text-slate-100 leading-tight truncate">
+                  {group.name}
+                </h3>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                  Gr.{group.group_id} / M{group.address}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {group.model === 'LC' ? 'LOSSNAY Ventilator' : 'Indoor Fan Coil Unit'}
+              </p>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {group.model === 'LC' ? 'LOSSNAY Ventilator' : 'Indoor Fan Coil Unit'}
-            </p>
           </div>
 
           {/* Quick Power Button */}
@@ -98,15 +134,15 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
               e.stopPropagation();
               if (!isViewer) onTogglePower(group);
             }}
-            disabled={isViewer}
+            disabled={isViewer || isSelectionMode}
             className={`p-2.5 rounded-xl border transition ${
-              isViewer
+              isViewer || isSelectionMode
                 ? 'bg-slate-800/50 text-slate-600 border-slate-800 cursor-not-allowed'
                 : isRunning
                 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 hover:bg-emerald-500/30 shadow-sm shadow-emerald-950'
                 : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200 hover:bg-slate-700'
             }`}
-            title={isViewer ? 'Power control disabled (Viewer mode)' : isRunning ? 'Turn Unit OFF' : 'Turn Unit ON'}
+            title={isViewer ? 'Power control disabled (Viewer mode)' : isSelectionMode ? 'Power disabled during selection' : isRunning ? 'Turn Unit OFF' : 'Turn Unit ON'}
           >
             <Power className="w-4 h-4" />
           </button>
@@ -201,12 +237,33 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
 
       {/* Bottom Action Footer */}
       <div className="p-3 pt-2 bg-slate-900/80 border-t border-slate-800/80">
-        <button
-          onClick={() => onOpenDetails(group)}
-          className="w-full py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 transition text-center"
-        >
-          {isViewer ? 'View Details & Status' : 'Adjust Settings & Details'}
-        </button>
+        {isSelectionMode ? (
+          <button
+            type="button"
+            disabled={isDisabledSelection}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!isDisabledSelection && onToggleSelect) onToggleSelect(group);
+            }}
+            className={`w-full py-1.5 px-3 rounded-lg text-xs font-semibold border transition text-center ${
+              isSelected
+                ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                : isDisabledSelection
+                ? 'bg-slate-900/60 text-slate-600 border-slate-800 cursor-not-allowed'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            }`}
+          >
+            {isSelected ? '✓ Selected for Bulk Edit' : isDisabledSelection ? 'Incompatible Device Type' : '+ Select Zone'}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onOpenDetails(group)}
+            className="w-full py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 transition text-center"
+          >
+            {isViewer ? 'View Details & Status' : 'Adjust Settings & Details'}
+          </button>
+        )}
       </div>
     </div>
   );

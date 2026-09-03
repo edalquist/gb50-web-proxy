@@ -762,14 +762,7 @@ async def get_seasons_route(
 ) -> List[Dict[str, Any]]:
     """Retrieve all 5 seasons with friendly labels, calendar date ranges, and active status."""
     try:
-        # Determine current month and day from controller clock or local time
         now = datetime.now()
-        if mgr.system_info and mgr.system_info.datetime:
-            try:
-                controller_dt = datetime.fromisoformat(mgr.system_info.datetime)
-                now = controller_dt
-            except Exception:
-                pass
         return schedule_db.list_seasons(now_month=now.month, now_day=now.day)
     except Exception as ex:
         logger.exception("Error in GET /api/v1/schedules/seasons: %s", ex)

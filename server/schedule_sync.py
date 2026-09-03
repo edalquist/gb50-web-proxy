@@ -132,9 +132,11 @@ def generate_smart_name(
 
 def merge_programs_for_group(
     program_ids: List[int],
+    season_id: Optional[int] = None,
 ) -> Tuple[Dict[int, List[Dict[str, Any]]], List[str]]:
     """
     Merge multiple layered schedule programs into a single coherent 7-day pattern (1=Mon .. 7=Sun).
+    Optionally filters by season_id (1..5).
     Returns (merged_7day_pattern, list_of_warnings).
     """
     if not program_ids:
@@ -144,6 +146,11 @@ def merge_programs_for_group(
     for pid in program_ids:
         p = schedule_db.get_schedule(pid)
         if p:
+            if season_id is not None:
+                p_season = p.get("season_id", 1)
+                p_scope = p.get("season_scope", [str(p_season)])
+                if p_season != season_id and "all" not in p_scope and str(season_id) not in p_scope:
+                    continue
             progs.append(p)
 
     merged_pattern: Dict[int, List[Dict[str, Any]]] = {}
@@ -236,13 +243,13 @@ def merge_programs_for_group(
     return merged_pattern, warnings
 
 
-async def sync_group_hardware(client: GB50Client, group_id: int) -> bool:
-    """Recompute merged weekly pattern from all assigned programs and flash group hardware EEPROM."""
+async def sync_group_hardware(client: GB50Client, group_id: int, season: int = 1) -> bool:
+    """Recompute merged weekly pattern from all assigned programs and flash group hardware EEPROM for given season."""
     program_ids = schedule_db.get_program_ids_for_group(group_id)
-    merged_pattern, _warnings = merge_programs_for_group(program_ids)
+    merged_pattern, _warnings = merge_programs_for_group(program_ids, season_id=season)
     expected_fp = fingerprint_pattern(merged_pattern)
 
-    logger.info(f"Flashing merged schedule ({len(program_ids)} programs) to group {group_id} across all 7 days...")
+    logger.info(f"Flashing merged Season {season} schedule ({len(program_ids)} programs) to group {group_id} across all 7 days...")
     try:
         for day in range(1, 8):
             events = merged_pattern.get(day, [])
@@ -250,12 +257,13 @@ async def sync_group_hardware(client: GB50Client, group_id: int) -> bool:
                 group_ids=[group_id],
                 day_of_week=day,
                 events=events,
+                season=season,
             )
             await asyncio.sleep(0.04)
 
         # Read-back verification
         try:
-            hw_items = await client.get_weekly_schedule(group_id)
+            hw_items = await client.get_weekly_schedule(group_id, season=season)
         except Exception as rex:
             logger.warning(f"Could not read back weekly schedule for group {group_id}: {rex}")
             hw_items = None
@@ -379,31 +387,74 @@ async def reconstruct_schedules_from_controller(
 
 
 async def push_schedule_to_hardware(client: GB50Client, schedule_id: int) -> bool:
-    """Push schedule changes to all groups that subscribe to this schedule program."""
+    """Push schedule changes to all groups that subscribe to this schedule program across its scoped seasons."""
     prog = schedule_db.get_schedule(schedule_id)
     if not prog or not prog["assigned_group_ids"]:
         return True
 
     gids = prog["assigned_group_ids"]
-    logger.info(f"Re-syncing {len(gids)} groups subscribed to program '{prog['name']}'...")
-    for gid in gids:
-        await sync_group_hardware(client, gid)
-        await asyncio.sleep(0.04)
+    season_id = prog.get("season_id", 1)
+    season_scope = prog.get("season_scope", [str(season_id)])
+    
+    # Determine which hardware season slots to flash
+    seasons_to_sync: List[int] = []
+    if "all" in season_scope:
+        seasons_to_sync = [1, 2, 3, 4, 5]
+    else:
+        for s in season_scope:
+            if s.isdigit() and 1 <= int(s) <= 5:
+                seasons_to_sync.append(int(s))
+        if not seasons_to_sync:
+            seasons_to_sync = [season_id]
+
+    logger.info(f"Re-syncing {len(gids)} groups subscribed to program '{prog['name']}' across seasons {seasons_to_sync}...")
+    for s in set(seasons_to_sync):
+        for gid in gids:
+            await sync_group_hardware(client, gid, season=s)
+            await asyncio.sleep(0.04)
 
     return True
 
 
-async def check_schedule_drift(client: GB50Client) -> Dict[int, str]:
-    """Check if any zone's hardware pattern has drifted from its merged DB schedule."""
+async def sync_all_groups_hardware(client: GB50Client, season: int = 1) -> Dict[str, Any]:
+    """Sync all groups on the controller with their merged schedule for a specific season."""
+    all_groups = schedule_db.get_all_group_program_assignments()
+    success_count = 0
+    fail_count = 0
+    for gid in all_groups.keys():
+        try:
+            await sync_group_hardware(client, gid, season=season)
+            success_count += 1
+            await asyncio.sleep(0.04)
+        except Exception as ex:
+            logger.error(f"Failed syncing group {gid} for season {season}: {ex}")
+            fail_count += 1
+
+    return {"season": season, "synced": success_count, "failed": fail_count}
+
+
+async def sync_all_seasons_hardware(client: GB50Client) -> Dict[str, Any]:
+    """Flash all 5 seasons for all groups to controller EEPROM."""
+    total_synced = 0
+    total_failed = 0
+    for s in range(1, 6):
+        res = await sync_all_groups_hardware(client, season=s)
+        total_synced += res["synced"]
+        total_failed += res["failed"]
+    return {"total_synced": total_synced, "total_failed": total_failed}
+
+
+async def check_schedule_drift(client: GB50Client, season: int = 1) -> Dict[int, str]:
+    """Check if any zone's hardware pattern has drifted from its merged DB schedule for given season."""
     all_groups = schedule_db.get_all_group_program_assignments()
     drift_report = {}
 
     for gid, pids in all_groups.items():
-        merged_pat, _ = merge_programs_for_group(pids)
+        merged_pat, _ = merge_programs_for_group(pids, season_id=season)
         expected_fp = fingerprint_pattern(merged_pat)
 
         try:
-            hw_items = await client.get_weekly_schedule(gid)
+            hw_items = await client.get_weekly_schedule(gid, season=season)
             hw_dict = {
                 day: [
                     {

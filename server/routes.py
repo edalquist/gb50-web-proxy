@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, status
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from gb50.models import (
@@ -39,6 +39,8 @@ from .schedule_sync import (
     calculate_weekly_runtime_hours,
     merge_programs_for_group,
     sync_group_hardware,
+    sync_all_groups_hardware,
+    sync_all_seasons_hardware,
 )
 
 logger = logging.getLogger("gb50.api")
@@ -219,11 +221,43 @@ class UpdatePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=3, max_length=10, description="New alphanumeric password")
 
 
+class SeasonInput(BaseModel):
+    season_id: int = Field(..., ge=1, le=5)
+    name: str = Field(..., min_length=1, max_length=50)
+    description: Optional[str] = Field("", max_length=200)
+    start_month: int = Field(0, ge=0, le=12)
+    start_day: int = Field(0, ge=0, le=31)
+    end_month: int = Field(0, ge=0, le=12)
+    end_day: int = Field(0, ge=0, le=31)
+    color: Optional[str] = Field("blue", max_length=20)
+    enabled: Optional[bool] = True
+
+
+class UpdateSeasonsRequest(BaseModel):
+    seasons: List[SeasonInput] = Field(..., min_length=1, max_length=5)
+
+
+class CloneSeasonRequest(BaseModel):
+    mode_transformation: str = Field("NONE", pattern="^(NONE|COOL_TO_HEAT|HEAT_TO_COOL|INVERT)$")
+    setpoint_offset_f: float = Field(0.0, ge=-20.0, le=20.0)
+    conflict_strategy: str = Field("REPLACE", pattern="^(REPLACE|APPEND)$")
+    auto_flash_hardware: bool = True
+
+
+class DuplicateProgramRequest(BaseModel):
+    target_season_id: Optional[int] = Field(None, ge=1, le=5)
+    name_suffix: Optional[str] = Field(" (Copy)", max_length=30)
+    mode_transformation: Optional[str] = Field("NONE", pattern="^(NONE|COOL_TO_HEAT|HEAT_TO_COOL|INVERT)$")
+    setpoint_offset_f: Optional[float] = Field(0.0, ge=-20.0, le=20.0)
+
+
 class CreateScheduleProgramRequest(BaseModel):
     """Payload to create a new named schedule program."""
     name: str = Field(..., min_length=1, max_length=50)
     description: Optional[str] = Field("", max_length=200)
     color: Optional[str] = Field("blue", max_length=20)
+    season_id: Optional[int] = Field(1, ge=1, le=5)
+    season_scope: Optional[List[str]] = Field(default_factory=lambda: ["1"])
     weekly_pattern: Optional[Dict[int, List[Union[ScheduleEventInput, Dict[str, Any]]]]] = None
     assigned_group_ids: Optional[List[int]] = Field(default_factory=list)
 
@@ -244,6 +278,8 @@ class UpdateScheduleProgramRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50)
     description: Optional[str] = Field(None, max_length=200)
     color: Optional[str] = Field(None, max_length=20)
+    season_id: Optional[int] = Field(None, ge=1, le=5)
+    season_scope: Optional[List[str]] = None
     weekly_pattern: Optional[Dict[int, List[Union[ScheduleEventInput, Dict[str, Any]]]]] = None
 
     @field_validator("weekly_pattern")
@@ -266,6 +302,7 @@ class AssignZonesRequest(BaseModel):
 class AssignProgramsToZoneRequest(BaseModel):
     """Payload to assign multiple schedule programs to a single HVAC zone."""
     program_ids: List[int] = Field(default_factory=list)
+
 
 
 # --- Authentication Endpoints ---
@@ -716,10 +753,137 @@ async def update_interlocks(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+# --- Seasonal Scheduling & Calendar Management ---
+
+@router.get("/schedules/seasons", summary="Get All 5 Seasons and Calendar Date Spans")
+async def get_seasons_route(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> List[Dict[str, Any]]:
+    """Retrieve all 5 seasons with friendly labels, calendar date ranges, and active status."""
+    try:
+        # Determine current month and day from controller clock or local time
+        now = datetime.now()
+        if mgr.system_info and mgr.system_info.datetime:
+            try:
+                controller_dt = datetime.fromisoformat(mgr.system_info.datetime)
+                now = controller_dt
+            except Exception:
+                pass
+        return schedule_db.list_seasons(now_month=now.month, now_day=now.day)
+    except Exception as ex:
+        logger.exception("Error in GET /api/v1/schedules/seasons: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.put("/schedules/seasons", summary="Update All Season Calendar Date Spans")
+async def update_seasons_route(
+    request: UpdateSeasonsRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> List[Dict[str, Any]]:
+    """Update season date spans and labels in DB and flash <WSeasonList> to controller hardware."""
+    try:
+        seasons_data = [s.model_dump() for s in request.seasons]
+        # Update SQLite DB
+        updated = schedule_db.update_all_seasons(seasons_data)
+        
+        # Flash to controller EEPROM
+        hw_payload = [
+            {
+                "season": s.get("season_id", 0),
+                "start_month": s.get("start_month", 0),
+                "start_day": s.get("start_day", 0),
+                "end_month": s.get("end_month", 0),
+                "end_day": s.get("end_day", 0),
+            }
+            for s in seasons_data
+        ]
+        await mgr.client.set_seasons(hw_payload)
+        return updated
+    except Exception as ex:
+        logger.exception("Error in PUT /api/v1/schedules/seasons: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.post("/schedules/seasons/{source_id}/clone-to/{target_id}", summary="Clone All Schedules from One Season to Another")
+async def clone_season_route(
+    source_id: int,
+    target_id: int,
+    request: CloneSeasonRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Clone all schedule programs and assignments from source season to target season."""
+    try:
+        if not (1 <= source_id <= 5 and 1 <= target_id <= 5):
+            raise HTTPException(status_code=400, detail="Invalid season IDs: must be between 1 and 5")
+        if source_id == target_id:
+            raise HTTPException(status_code=400, detail="Source and target season cannot be the same")
+
+        cloned_programs = schedule_db.clone_season_schedules(
+            source_season_id=source_id,
+            target_season_id=target_id,
+            mode_transformation=request.mode_transformation,
+            setpoint_offset_f=request.setpoint_offset_f,
+            conflict_strategy=request.conflict_strategy,
+        )
+
+        sync_result = None
+        if request.auto_flash_hardware:
+            sync_result = await sync_all_groups_hardware(mgr.client, season=target_id)
+
+        return {
+            "status": "success",
+            "source_season_id": source_id,
+            "target_season_id": target_id,
+            "cloned_count": len(cloned_programs),
+            "programs": cloned_programs,
+            "sync_result": sync_result,
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/seasons/%s/clone-to/%s: %s", source_id, target_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.post("/schedules/sync-season/{season_id}", summary="Flash Season Schedules to Controller EEPROM")
+async def sync_season_hardware_route(
+    season_id: int,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Flash merged weekly schedule patterns for a specific season to all controller zones."""
+    try:
+        if not (1 <= season_id <= 5):
+            raise HTTPException(status_code=400, detail="Invalid season ID (1..5)")
+        res = await sync_all_groups_hardware(mgr.client, season=season_id)
+        return {"status": "success", "result": res}
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/sync-season/%s: %s", season_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.post("/schedules/sync-all-seasons", summary="Flash All 5 Seasons to Controller EEPROM")
+async def sync_all_seasons_hardware_route(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Flash all 5 seasonal patterns across all 50 zones to controller EEPROM."""
+    try:
+        res = await sync_all_seasons_hardware(mgr.client)
+        return {"status": "success", "result": res}
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/sync-all-seasons: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 # --- Schedule Programs (Schedule-First Architecture) ---
 
 @router.get("/schedules/programs", summary="List All Named Schedule Programs")
 async def list_schedule_programs(
+    season: Optional[int] = Query(None, ge=1, le=5, description="Filter programs by Season ID (1..5)"),
     mgr: StateManager = Depends(get_state_mgr),
     _role: Dict[str, Any] = Depends(require_role("viewer")),
 ) -> List[Dict[str, Any]]:
@@ -729,7 +893,7 @@ async def list_schedule_programs(
             # Self-healing auto-reconstruct from controller hardware
             progs = await reconstruct_schedules_from_controller(mgr.client)
         else:
-            progs = schedule_db.list_schedules()
+            progs = schedule_db.list_schedules(season_id=season)
         
         # Calculate runtime hours for each program
         for p in progs:
@@ -754,6 +918,8 @@ async def create_schedule_program(
             color=request.color or "blue",
             weekly_pattern=request.weekly_pattern or {d: [] for d in range(1, 8)},
             assigned_group_ids=request.assigned_group_ids or [],
+            season_id=request.season_id or 1,
+            season_scope=request.season_scope or [str(request.season_id or 1)],
         )
         if request.assigned_group_ids:
             await push_schedule_to_hardware(mgr.client, prog["id"])
@@ -792,6 +958,8 @@ async def update_schedule_program_details(
             name=request.name,
             description=request.description,
             color=request.color,
+            season_id=request.season_id,
+            season_scope=request.season_scope,
             weekly_pattern=request.weekly_pattern,
         )
         if not prog:
@@ -811,6 +979,33 @@ async def update_schedule_program_details(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+@router.post("/schedules/programs/{program_id}/duplicate", summary="Duplicate Single Schedule Program")
+async def duplicate_schedule_program_route(
+    program_id: int,
+    request: DuplicateProgramRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Duplicate an individual schedule program, optionally assigning to a new season and offsetting setpoint."""
+    try:
+        duplicated = schedule_db.duplicate_schedule(
+            schedule_id=program_id,
+            target_season_id=request.target_season_id,
+            name_suffix=request.name_suffix or " (Copy)",
+            mode_transformation=request.mode_transformation or "NONE",
+            setpoint_offset_f=request.setpoint_offset_f or 0.0,
+        )
+        if not duplicated:
+            raise HTTPException(status_code=404, detail="Original schedule program not found")
+        duplicated["weekly_hours"] = calculate_weekly_runtime_hours(duplicated["weekly_pattern"])
+        return duplicated
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/programs/%s/duplicate: %s", program_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 @router.delete("/schedules/programs/{program_id}", summary="Delete Named Schedule Program")
 async def delete_schedule_program_route(
     program_id: int,
@@ -822,15 +1017,17 @@ async def delete_schedule_program_route(
     if not prog:
         raise HTTPException(status_code=404, detail="Schedule program not found")
     affected_gids = list(prog["assigned_group_ids"])
+    season_id = prog.get("season_id", 1)
     success = schedule_db.delete_schedule(program_id)
     if not success:
         raise HTTPException(status_code=404, detail="Schedule program not found")
     for gid in affected_gids:
         try:
-            await sync_group_hardware(mgr.client, gid)
+            await sync_group_hardware(mgr.client, gid, season=season_id)
         except Exception as ex:
             logger.warning("Could not re-sync group %s after program deletion: %s", gid, ex)
     return {"status": "success", "message": f"Deleted schedule program {program_id}"}
+
 
 
 @router.post("/schedules/programs/{program_id}/assign", summary="Assign Zones to Schedule Program")

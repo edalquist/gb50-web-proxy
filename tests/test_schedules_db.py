@@ -553,6 +553,92 @@ async def test_merge_and_sync_with_none_drive_and_enums(tmp_path):
         sync_module.schedule_db = old_db
 
 
+def test_seasonal_schedules_db_and_cloning(temp_db):
+    """Verify seasons listing, date checks, multi-season program filtering, and 1-click cloning."""
+    # 1. Check default seeded seasons
+    seasons = temp_db.list_seasons(now_month=7, now_day=15)
+    assert len(seasons) == 5
+    assert seasons[0]["season_id"] == 1
+    assert seasons[0]["name"] == "Summer Cooling"
+    assert seasons[0]["is_active_today"] is True  # Jul 15 is in Apr 1 - Sep 30
+    assert seasons[1]["is_active_today"] is False  # Jul 15 is not in Oct 1 - Mar 31
+
+    # Check winter active date
+    winter_seasons = temp_db.list_seasons(now_month=12, now_day=25)
+    assert winter_seasons[1]["is_active_today"] is True
+
+    # 2. Update season date ranges
+    temp_db.update_season(
+        season_id=3,
+        name="Spring Transition",
+        start_month=3,
+        start_day=1,
+        end_month=3,
+        end_day=31,
+        enabled=True,
+    )
+    s3 = temp_db.get_season(3)
+    assert s3["name"] == "Spring Transition"
+    assert s3["start_month"] == 3
+    assert s3["enabled"] is True
+
+    # 3. Create programs in different seasons
+    summer_prog = temp_db.create_schedule(
+        name="Summer Sanctuary Cooling",
+        weekly_pattern={1: [{"hour": 8, "minute": 0, "drive": "ON", "mode": "COOL", "set_temp_f": 72.0}]},
+        assigned_group_ids=[1, 2],
+        season_id=1,
+        season_scope=["1"],
+    )
+    year_round_prog = temp_db.create_schedule(
+        name="Sunday Service Year-Round",
+        weekly_pattern={7: [{"hour": 9, "minute": 0, "drive": "ON", "mode": "AUTO", "set_temp_f": 70.0}]},
+        assigned_group_ids=[1],
+        season_id=1,
+        season_scope=["all"],
+    )
+
+    # Filter by season 1
+    s1_progs = temp_db.list_schedules(season_id=1)
+    assert len(s1_progs) == 2
+
+    # Filter by season 2: Should match year_round_prog ("all") but not summer_prog ("1")
+    s2_progs = temp_db.list_schedules(season_id=2)
+    assert len(s2_progs) == 1
+    assert s2_progs[0]["name"] == "Sunday Service Year-Round"
+
+    # 4. Clone Season 1 -> Season 2 with COOL -> HEAT conversion and -2°F offset
+    cloned = temp_db.clone_season_schedules(
+        source_season_id=1,
+        target_season_id=2,
+        mode_transformation="COOL_TO_HEAT",
+        setpoint_offset_f=-2.0,
+        conflict_strategy="REPLACE",
+    )
+    assert len(cloned) == 1  # Only summer_prog (which had season_id == 1) was cloned
+    winter_clone = cloned[0]
+    assert "Winter Heating" in winter_clone["name"]
+    assert winter_clone["season_id"] == 2
+    assert winter_clone["assigned_group_ids"] == [1, 2]
+
+    # Verify event transformed to HEAT and 70°F
+    event = winter_clone["weekly_pattern"][1][0]
+    assert event["mode"] == "HEAT"
+    assert event["set_temp_f"] == 70.0
+
+    # 5. Duplicate individual program
+    dup = temp_db.duplicate_program(
+        schedule_id=summer_prog["id"],
+        target_season_id=3,
+        name_suffix=" (Spring)",
+        mode_transformation="NONE",
+        setpoint_offset_f=0.0,
+    )
+    assert dup["name"] == "Summer Sanctuary Cooling (Spring)"
+    assert dup["season_id"] == 3
+
+
+
 
 
 

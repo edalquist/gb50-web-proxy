@@ -4,6 +4,9 @@ import {
   GroupControlRequest, 
   ScheduleItem, 
   ScheduleProgram,
+  SeasonConfig,
+  SeasonCloneRequest,
+  DuplicateProgramPayload,
   AlarmRecord,
   GroupConfigPayload,
   UnassignedAddressesResponse,
@@ -251,10 +254,87 @@ export async function updateWeeklySchedule(
   return res.json();
 }
 
+// --- Seasons & Calendar API ---
+
+export async function fetchSeasons(): Promise<SeasonConfig[]> {
+  const res = await authFetch(`${API_BASE}/schedules/seasons`);
+  if (!res.ok) throw new Error(`Failed to fetch seasons: ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateSeasons(seasons: SeasonConfig[]): Promise<SeasonConfig[]> {
+  const res = await authFetch(`${API_BASE}/schedules/seasons`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seasons }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to update seasons: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function cloneSeason(
+  sourceId: number,
+  targetId: number,
+  data: SeasonCloneRequest
+): Promise<{ status: string; cloned_count: number; programs: ScheduleProgram[]; sync_result?: any }> {
+  const res = await authFetch(`${API_BASE}/schedules/seasons/${sourceId}/clone-to/${targetId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to clone season: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function duplicateProgram(
+  programId: number,
+  data: DuplicateProgramPayload
+): Promise<ScheduleProgram> {
+  const res = await authFetch(`${API_BASE}/schedules/programs/${programId}/duplicate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to duplicate program: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function syncSeason(seasonId: number): Promise<{ status: string; result: any }> {
+  const res = await authFetch(`${API_BASE}/schedules/sync-season/${seasonId}`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to sync season: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function syncAllSeasons(): Promise<{ status: string; result: any }> {
+  const res = await authFetch(`${API_BASE}/schedules/sync-all-seasons`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to sync all seasons: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 // --- Schedule Programs API (Schedule-First Architecture) ---
 
-export async function fetchSchedulePrograms(): Promise<ScheduleProgram[]> {
-  const res = await authFetch(`${API_BASE}/schedules/programs`);
+export async function fetchSchedulePrograms(seasonId?: number): Promise<ScheduleProgram[]> {
+  const url = seasonId ? `${API_BASE}/schedules/programs?season=${seasonId}` : `${API_BASE}/schedules/programs`;
+  const res = await authFetch(url);
   if (!res.ok) throw new Error(`Failed to fetch schedule programs: ${res.statusText}`);
   return res.json();
 }
@@ -263,6 +343,8 @@ export async function createScheduleProgram(data: {
   name: string;
   description?: string;
   color?: string;
+  season_id?: number;
+  season_scope?: string[];
   weekly_pattern?: Record<number, any[]>;
   assigned_group_ids?: number[];
 }): Promise<ScheduleProgram> {
@@ -284,6 +366,8 @@ export async function updateScheduleProgram(
     name?: string;
     description?: string;
     color?: string;
+    season_id?: number;
+    season_scope?: string[];
     weekly_pattern?: Record<number, any[]>;
   }
 ): Promise<ScheduleProgram> {

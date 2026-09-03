@@ -197,11 +197,41 @@ export interface UpdateUserPayload {
   new_password?: string;
 }
 
+export interface SeasonConfig {
+  season_id: number;
+  name: string;
+  description?: string;
+  start_month: number;
+  start_day: number;
+  end_month: number;
+  end_day: number;
+  color: string;
+  enabled: boolean;
+  is_active_today?: boolean;
+  updated_at?: string;
+}
+
+export interface SeasonCloneRequest {
+  mode_transformation: 'NONE' | 'COOL_TO_HEAT' | 'HEAT_TO_COOL' | 'INVERT';
+  setpoint_offset_f: number;
+  conflict_strategy: 'REPLACE' | 'APPEND';
+  auto_flash_hardware?: boolean;
+}
+
+export interface DuplicateProgramPayload {
+  target_season_id?: number;
+  name_suffix?: string;
+  mode_transformation?: 'NONE' | 'COOL_TO_HEAT' | 'HEAT_TO_COOL' | 'INVERT';
+  setpoint_offset_f?: number;
+}
+
 export interface ScheduleProgram {
   id: number;
   name: string;
   description: string;
   color: string;
+  season_id?: number;
+  season_scope?: string[];
   weekly_pattern: Record<number, ScheduleItem[]>;
   assigned_group_ids: number[];
   sync_status: 'SYNCED' | 'DRIFT_DETECTED' | 'PENDING' | 'ERROR';
@@ -209,5 +239,6 @@ export interface ScheduleProgram {
   created_at?: string;
   updated_at?: string;
 }
+
 
 

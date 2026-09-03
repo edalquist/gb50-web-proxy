@@ -12,16 +12,20 @@ import {
   Edit2, 
   X, 
   AlertTriangle, 
+  AlertCircle,
   ArrowRight, 
   Search, 
-  Send
+  Send,
+  Sun
 } from 'lucide-react';
 import { 
   GroupStatus, 
   ScheduleItem, 
   ScheduleProgram, 
   ScheduleEventInput, 
-  OperationMode 
+  OperationMode,
+  SeasonConfig,
+  SeasonCloneRequest
 } from '../types';
 import { 
   fetchWeeklySchedule, 
@@ -30,15 +34,22 @@ import {
   createScheduleProgram,
   updateScheduleProgram,
   deleteScheduleProgram,
+  duplicateProgram,
   assignZonesToProgram,
   pushScheduleProgramToHardware,
   reconstructSchedulesFromHardware,
   fetchAllZoneAssignments,
   updateZonePrograms,
-  fetchZoneMergedSchedule
+  fetchZoneMergedSchedule,
+  fetchSeasons,
+  updateSeasons,
+  cloneSeason,
+  syncSeason
 } from '../api';
 import { useAuth } from '../AuthContext';
 import { DestructiveConfirmModal } from './DestructiveConfirmModal';
+import { SeasonTimelineModal } from './SeasonTimelineModal';
+import { SeasonCloneModal } from './SeasonCloneModal';
 
 interface ScheduleViewProps {
   groups: GroupStatus[];
@@ -119,6 +130,13 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const [assignModalSelectedZones, setAssignModalSelectedZones] = useState<number[]>([]);
   const [assignFilterFloor, setAssignFilterFloor] = useState<'all' | 'floor1' | 'floor2' | 'lossnay'>('all');
 
+  // Seasonal State
+  const [seasons, setSeasons] = useState<SeasonConfig[]>([]);
+  const [selectedSeasonId, setSelectedSeasonId] = useState<number | 'all'>('all');
+  const [isSeasonTimelineModalOpen, setIsSeasonTimelineModalOpen] = useState(false);
+  const [isSeasonCloneModalOpen, setIsSeasonCloneModalOpen] = useState(false);
+  const [isSyncingSeason, setIsSyncingSeason] = useState(false);
+
   const [editingProgram, setEditingProgram] = useState<ScheduleProgram | null>(null);
   const [deleteConfirmProgram, setDeleteConfirmProgram] = useState<ScheduleProgram | null>(null);
   const [isDeletingProgram, setIsDeletingProgram] = useState(false);
@@ -127,6 +145,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const [programFormName, setProgramFormName] = useState('');
   const [programFormDesc, setProgramFormDesc] = useState('');
   const [programFormColor, setProgramFormColor] = useState('blue');
+  const [programFormSeasonId, setProgramFormSeasonId] = useState<number>(1);
+  const [programFormSeasonScope, setProgramFormSeasonScope] = useState<string[]>(['1']);
   const [programFormPattern, setProgramFormPattern] = useState<Record<number, any[]>>({
     1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: []
   });
@@ -199,9 +219,53 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     }
   };
 
+  const loadSeasons = async () => {
+    try {
+      const list = await fetchSeasons();
+      setSeasons(list);
+      // If selectedSeasonId is unset or 'all', auto-default to active season
+      const active = list.find(s => s.is_active_today);
+      if (active) {
+        setSelectedSeasonId(active.season_id);
+      } else if (list.length > 0) {
+        setSelectedSeasonId(list[0].season_id);
+      }
+    } catch (err) {
+      console.error('Failed to load seasons:', err);
+    }
+  };
+
   useEffect(() => {
     loadPrograms();
+    loadSeasons();
   }, []);
+
+  const handleSaveSeasons = async (newSeasons: SeasonConfig[]) => {
+    const updated = await updateSeasons(newSeasons);
+    setSeasons(updated);
+    setStatusMsg('Successfully updated seasonal calendar date spans and flashed to controller memory.');
+  };
+
+  const handleCloneSeason = async (sourceId: number, targetId: number, req: SeasonCloneRequest) => {
+    const res = await cloneSeason(sourceId, targetId, req);
+    await loadPrograms();
+    setSelectedSeasonId(targetId);
+    setStatusMsg(`Successfully cloned ${res.cloned_count} programs from Season ${sourceId} into Season ${targetId}.`);
+  };
+
+  const handleSyncActiveSeason = async () => {
+    if (typeof selectedSeasonId !== 'number') return;
+    setIsSyncingSeason(true);
+    setStatusMsg(null);
+    try {
+      await syncSeason(selectedSeasonId);
+      setStatusMsg(`Successfully flashed Season ${selectedSeasonId} schedule patterns across all zones to controller EEPROM.`);
+    } catch (err: any) {
+      setStatusMsg(`Error syncing season: ${err.message}`);
+    } finally {
+      setIsSyncingSeason(false);
+    }
+  };
 
   const loadWeeklyScheduleForGroup = async (groupId: number) => {
     if (!groupId) return;
@@ -262,6 +326,16 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
   // Group lookup map
   const groupMap = useMemo(() => new Map(groups.map((g) => [g.group_id, g])), [groups]);
+
+  // Filtered programs for selected season
+  const filteredPrograms = useMemo(() => {
+    if (selectedSeasonId === 'all') return programs;
+    return programs.filter((p) => {
+      const pSeason = p.season_id || 1;
+      const pScope = p.season_scope || [String(pSeason)];
+      return pSeason === selectedSeasonId || pScope.includes('all') || pScope.includes(String(selectedSeasonId));
+    });
+  }, [programs, selectedSeasonId]);
 
   // Programs lookup map
   const programMap = useMemo(() => new Map(programs.map((p) => [p.id, p])), [programs]);
@@ -445,6 +519,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     setProgramFormName(prog.name);
     setProgramFormDesc(prog.description);
     setProgramFormColor(prog.color || 'blue');
+    setProgramFormSeasonId(prog.season_id || 1);
+    setProgramFormSeasonScope(prog.season_scope || [String(prog.season_id || 1)]);
     setProgramFormPattern(JSON.parse(JSON.stringify(prog.weekly_pattern)));
     setProgramEditorDay(7);
     setIsCreateProgramOpen(true);
@@ -455,6 +531,9 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     setProgramFormName('');
     setProgramFormDesc('');
     setProgramFormColor('blue');
+    const defaultSeason = typeof selectedSeasonId === 'number' ? selectedSeasonId : 1;
+    setProgramFormSeasonId(defaultSeason);
+    setProgramFormSeasonScope([String(defaultSeason)]);
     setProgramFormPattern({ 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [] });
     setProgramEditorDay(7);
     setIsCreateProgramOpen(true);
@@ -473,6 +552,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           name: programFormName.trim(),
           description: programFormDesc.trim(),
           color: programFormColor,
+          season_id: programFormSeasonId,
+          season_scope: programFormSeasonScope,
           weekly_pattern: programFormPattern,
         });
         setPrograms((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
@@ -482,6 +563,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           name: programFormName.trim(),
           description: programFormDesc.trim(),
           color: programFormColor,
+          season_id: programFormSeasonId,
+          season_scope: programFormSeasonScope,
           weekly_pattern: programFormPattern,
           assigned_group_ids: [],
         });
@@ -494,6 +577,18 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       setStatusMsg(`Error saving program: ${err.message}`);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleDuplicateSingleProgram = async (prog: ScheduleProgram) => {
+    try {
+      const dup = await duplicateProgram(prog.id, {
+        name_suffix: ' (Copy)',
+      });
+      await loadPrograms();
+      setStatusMsg(`Duplicated schedule program '${dup.name}'.`);
+    } catch (err: any) {
+      setStatusMsg(`Error duplicating program: ${err.message}`);
     }
   };
 
@@ -780,6 +875,113 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         </div>
       </div>
 
+      {/* Global Season Switcher Bar */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          
+          {/* Season Filter Tabs */}
+          <div className="flex items-center flex-wrap gap-2">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-1 flex items-center gap-1.5">
+              <Sun className="w-4 h-4 text-amber-400" /> Season:
+            </span>
+
+            {/* All Seasons Tab */}
+            <button
+              onClick={() => setSelectedSeasonId('all')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                selectedSeasonId === 'all'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              🌐 All Seasons
+            </button>
+
+            {/* 5 Season Slots */}
+            {seasons.map((s) => {
+              const colors = COLOR_CLASSES[s.color] || COLOR_CLASSES.blue;
+              const isSelected = selectedSeasonId === s.season_id;
+              const isConfigured = s.start_month > 0 && s.end_month > 0;
+              const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+              const dateRangeStr = isConfigured 
+                ? `${MONTHS_SHORT[s.start_month - 1]} ${s.start_day} – ${MONTHS_SHORT[s.end_month - 1]} ${s.end_day}`
+                : 'Unassigned';
+
+              return (
+                <button
+                  key={s.season_id}
+                  onClick={() => setSelectedSeasonId(s.season_id)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
+                    isSelected
+                      ? `${colors.bg} ${colors.text} ${colors.border} ring-1 ring-white/20 shadow-md`
+                      : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  }`}
+                >
+                  <span>Season {s.season_id}: {s.name}</span>
+                  <span className="text-[10px] text-slate-400 font-normal">({dateRangeStr})</span>
+                  {s.is_active_today && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Active Season Today" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Action Tools */}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <button
+              onClick={() => setIsSeasonCloneModalOpen(true)}
+              disabled={!isOperatorOrAdmin}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition cursor-pointer"
+              title="Copy all schedule routines from one season to another"
+            >
+              <Copy className="w-3.5 h-3.5 text-indigo-400" />
+              Clone Season...
+            </button>
+
+            <button
+              onClick={() => setIsSeasonTimelineModalOpen(true)}
+              disabled={!isOperatorOrAdmin}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition cursor-pointer"
+              title="Configure calendar start/end dates for all 5 seasons"
+            >
+              <Calendar className="w-3.5 h-3.5 text-amber-400" />
+              Calendar Dates...
+            </button>
+
+            {typeof selectedSeasonId === 'number' && (
+              <button
+                onClick={handleSyncActiveSeason}
+                disabled={isSyncingSeason || !isOperatorOrAdmin}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-semibold transition cursor-pointer"
+                title={`Flash Season ${selectedSeasonId} schedules to controller EEPROM`}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSeason ? 'animate-spin' : ''}`} />
+                {isSyncingSeason ? 'Syncing...' : `Flash Season ${selectedSeasonId}`}
+              </button>
+            )}
+          </div>
+
+        </div>
+
+        {/* Advisory banner when editing an inactive season */}
+        {typeof selectedSeasonId === 'number' && (() => {
+          const currentViewingSeason = seasons.find(s => s.season_id === selectedSeasonId);
+          const activeTodaySeason = seasons.find(s => s.is_active_today);
+          if (currentViewingSeason && !currentViewingSeason.is_active_today && activeTodaySeason) {
+            return (
+              <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center gap-2.5 text-xs text-blue-300">
+                <AlertCircle className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                <span>
+                  <strong>Notice:</strong> You are viewing and editing <strong>Season {currentViewingSeason.season_id} ({currentViewingSeason.name})</strong>. The controller is currently running <strong>Season {activeTodaySeason.season_id} ({activeTodaySeason.name})</strong> today. Changes made here will take effect automatically when Season {currentViewingSeason.season_id}'s date window begins.
+                </span>
+              </div>
+            );
+          }
+          return null;
+        })()}
+      </div>
+
       {/* Status Alert Banner */}
       {statusMsg && (
         <div className={`p-4 rounded-xl border flex items-center justify-between text-sm transition-all ${
@@ -805,7 +1007,9 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           {/* Programs Toolbar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-center gap-2 text-sm text-slate-400">
-              <span>Modular schedule layers that can be combined and subscribed by multiple zones.</span>
+              <span>
+                {selectedSeasonId === 'all' ? 'All modular schedule routines across all seasons.' : `Modular schedule routines assigned to Season ${selectedSeasonId}.`}
+              </span>
             </div>
 
             <div className="flex items-center gap-3">
@@ -837,9 +1041,17 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
               <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-3 text-blue-500" />
               <p>Scanning controller weekly patterns and clustering programs...</p>
             </div>
+          ) : filteredPrograms.length === 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center text-slate-400 space-y-3">
+              <Calendar className="w-8 h-8 mx-auto text-slate-600" />
+              <p className="font-medium text-slate-300">No schedule programs found for this season.</p>
+              <p className="text-xs text-slate-500">
+                You can create a new program or clone programs from another season using the "Clone Season..." button above.
+              </p>
+            </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {programs.map((prog) => {
+              {filteredPrograms.map((prog) => {
                 const colorConfig = COLOR_CLASSES[prog.color] || COLOR_CLASSES.blue;
                 const assignedCount = prog.assigned_group_ids.length;
 
@@ -851,9 +1063,12 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                     {/* Top Header */}
                     <div>
                       <div className="flex items-start justify-between gap-4 mb-3">
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${colorConfig.badge}`}>
                             {prog.name.slice(0, 18)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono px-2 py-0.5 rounded bg-slate-800 border border-slate-700">
+                            {prog.season_scope?.includes('all') ? '🌐 Year-Round' : `Season ${prog.season_id || 1}`}
                           </span>
                           {prog.sync_status === 'DRIFT_DETECTED' && (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
@@ -873,6 +1088,15 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                         </div>
 
                         <div className="flex items-center gap-1 text-slate-400">
+                          {isOperatorOrAdmin && (
+                            <button
+                              onClick={() => handleDuplicateSingleProgram(prog)}
+                              className="p-1.5 hover:bg-slate-800 hover:text-indigo-400 rounded-lg transition"
+                              title="Duplicate program"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                          )}
                           {isOperatorOrAdmin && (
                             <button
                               onClick={() => handleOpenEditProgram(prog)}
@@ -1859,8 +2083,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             </div>
 
             {/* Metadata Fields */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="sm:col-span-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">Program Name</label>
                 <input
                   type="text"
@@ -1889,7 +2113,46 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 </select>
               </div>
 
-              <div className="sm:col-span-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Target Season Slot</label>
+                <select
+                  value={programFormSeasonId}
+                  onChange={(e) => {
+                    const sid = Number(e.target.value);
+                    setProgramFormSeasonId(sid);
+                    if (!programFormSeasonScope.includes('all')) {
+                      setProgramFormSeasonScope([String(sid)]);
+                    }
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                >
+                  {seasons.map((s) => (
+                    <option key={s.season_id} value={s.season_id}>
+                      Season {s.season_id}: {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Season Scope</label>
+                <select
+                  value={programFormSeasonScope.includes('all') ? 'all' : 'single'}
+                  onChange={(e) => {
+                    if (e.target.value === 'all') {
+                      setProgramFormSeasonScope(['all']);
+                    } else {
+                      setProgramFormSeasonScope([String(programFormSeasonId)]);
+                    }
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                >
+                  <option value="single">Single Season Only (Season {programFormSeasonId})</option>
+                  <option value="all">Year-Round / All Seasons (1..5)</option>
+                </select>
+              </div>
+
+              <div className="sm:col-span-2">
                 <label className="block text-xs font-semibold text-slate-300 mb-1">Description / Notes</label>
                 <input
                   type="text"
@@ -2244,6 +2507,24 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         }
         onConfirm={executeReconstructHardware}
         onClose={() => setIsReconstructModalOpen(false)}
+      />
+
+      {/* Season Timeline & Calendar Date Spans Modal */}
+      <SeasonTimelineModal
+        isOpen={isSeasonTimelineModalOpen}
+        onClose={() => setIsSeasonTimelineModalOpen(false)}
+        seasons={seasons}
+        onSaveSeasons={handleSaveSeasons}
+      />
+
+      {/* Season Clone & Transformation Modal */}
+      <SeasonCloneModal
+        isOpen={isSeasonCloneModalOpen}
+        onClose={() => setIsSeasonCloneModalOpen(false)}
+        seasons={seasons}
+        programs={programs}
+        activeSeasonId={typeof selectedSeasonId === 'number' ? selectedSeasonId : 1}
+        onCloneSeason={handleCloneSeason}
       />
     </div>
   );

@@ -68,7 +68,7 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
     if (tempUnit === 'F') {
       const nextF = Math.min(86, Math.max(63, Math.round((setTempF + delta) * 2) / 2));
       setSetTempF(nextF);
-      setSetTempC(Math.round(((nextF - 32) * 5 / 9) * 10) / 10);
+      setSetTempC(Math.round(((nextF - 32) * 5 / 9) * 2) / 2);
     } else {
       const nextC = Math.min(30, Math.max(17, Math.round((setTempC + delta * 0.5) * 2) / 2));
       setSetTempC(nextC);

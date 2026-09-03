@@ -186,10 +186,10 @@ class ScheduleEventInput(BaseModel):
 
     def resolved_temp_c(self) -> Optional[float]:
         if self.set_temp_c is not None:
-            return round(self.set_temp_c, 1)
+            return round(round(float(self.set_temp_c) * 2.0) / 2.0, 1)
         if self.set_temp_f is not None:
-            raw_c = (self.set_temp_f - 32.0) * 5.0 / 9.0
-            return round(raw_c, 1)
+            raw_c = (float(self.set_temp_f) - 32.0) * 5.0 / 9.0
+            return round(round(raw_c * 2.0) / 2.0, 1)
         return None
 
 

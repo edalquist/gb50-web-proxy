@@ -29,7 +29,10 @@ def _event_key(ev: Dict[str, Any]) -> str:
     temp_str = f"{temp:.1f}" if temp is not None else ""
     fan = ev.get("fan_speed", "") or ""
     vane = ev.get("air_direction", "") or ""
-    return f"{h:02d}:{m:02d}|{d}|{mode}|{temp_str}|{fan}|{vane}"
+    lock = ev.get("remote_lock", "PERMIT") or "PERMIT"
+    if hasattr(lock, "value"):
+        lock = lock.value
+    return f"{h:02d}:{m:02d}|{d}|{mode}|{temp_str}|{fan}|{vane}|{lock}"
 
 
 def fingerprint_pattern(pattern: Dict[int, List[Dict[str, Any]]]) -> str:
@@ -234,6 +237,7 @@ def merge_programs_for_group(
                 "set_temp_f": temp_f,
                 "fan_speed": fan_val,
                 "air_direction": air_val,
+                "remote_lock": (getattr(getattr(ev.get("remote_lock"), "value", None), "value", None) or getattr(ev.get("remote_lock"), "value", None) or ev.get("remote_lock") or "PERMIT"),
                 "source_program_id": ev.get("_source_program_id"),
                 "source_program_name": ev.get("_source_program_name"),
             })
@@ -284,6 +288,7 @@ async def sync_group_hardware(client: GB50Client, group_id: int, season: int = 1
                             else None,
                             "fan_speed": (getattr(getattr(item, "fan_speed", None), "value", None) or getattr(item, "fan_speed", None) or (item.get("fan_speed") if isinstance(item, dict) else "") or ""),
                             "air_direction": (getattr(getattr(item, "air_direction", None), "value", None) or getattr(item, "air_direction", None) or (item.get("air_direction") if isinstance(item, dict) else "") or ""),
+                            "remote_lock": (getattr(getattr(item, "remote_lock", None), "value", None) or getattr(item, "remote_lock", None) or (item.get("remote_lock") if isinstance(item, dict) else "PERMIT") or "PERMIT"),
                         }
                         for item in items
                     ]

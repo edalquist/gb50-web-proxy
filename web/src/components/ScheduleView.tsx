@@ -16,7 +16,9 @@ import {
   ArrowRight, 
   Search, 
   Send,
-  Sun
+  Sun,
+  Lock,
+  Unlock
 } from 'lucide-react';
 import { 
   GroupStatus, 
@@ -192,6 +194,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     set_temp_c: 21.5,
     fan_speed: 'AUTO',
     air_direction: 'HORIZONTAL',
+    remote_lock: 'PERMIT',
   });
 
   // Day Duplicate Modal
@@ -615,6 +618,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         set_temp_c: ev.set_temp_c,
         fan_speed: ev.fan_speed,
         air_direction: ev.air_direction,
+        remote_lock: ev.remote_lock || 'PERMIT',
       }));
 
       const res = await updateWeeklySchedule(
@@ -658,6 +662,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           set_temp_c: ev.set_temp_c || 21.5,
           fan_speed: ev.fan_speed || 'AUTO',
           air_direction: ev.air_direction || 'HORIZONTAL',
+          remote_lock: ev.remote_lock || 'PERMIT',
         });
       }
     } else {
@@ -670,6 +675,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         set_temp_c: 21.5,
         fan_speed: 'AUTO',
         air_direction: 'HORIZONTAL',
+        remote_lock: 'PERMIT',
       });
     }
     setIsEventModalOpen(true);
@@ -688,6 +694,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
       set_temp_f: eventForm.set_temp_f,
       fan_speed: eventForm.fan_speed,
       air_direction: eventForm.air_direction,
+      remote_lock: eventForm.remote_lock || 'PERMIT',
     };
 
     if (eventFormTarget === 'planner') {
@@ -1608,6 +1615,15 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                               }`}>
                                 {ev.drive || (isOn ? 'ON' : 'OFF')}
                               </span>
+                              {ev.remote_lock === 'PROHIBIT' ? (
+                                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30" title="Wall remote locked (CENTRAL)">
+                                  <Lock className="w-2.5 h-2.5" /> Locked
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800/80 text-slate-400 border border-slate-700/50" title="Wall remote permitted (local adjustment allowed)">
+                                  <Unlock className="w-2.5 h-2.5 text-emerald-400" /> Unlocked
+                                </span>
+                              )}
                               {ev.source_program_name && (
                                 <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-900/60 text-blue-300 border border-blue-700/50">
                                   {ev.source_program_name}
@@ -2206,11 +2222,20 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                         key={idx}
                         className="bg-slate-900 p-2 rounded-lg border border-slate-800/80 flex items-center justify-between text-xs"
                       >
-                        <div className="flex items-center gap-2 font-mono">
+                        <div className="flex items-center gap-2 font-mono flex-wrap">
                           <span className="font-bold text-slate-200">{ev.time_str}</span>
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${isOn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
                             {ev.drive || (isOn ? 'ON' : 'OFF')}
                           </span>
+                          {ev.remote_lock === 'PROHIBIT' ? (
+                            <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30" title="Wall remote locked (CENTRAL)">
+                              <Lock className="w-2.5 h-2.5" /> Locked
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium bg-slate-800 text-slate-400" title="Wall remote permitted">
+                              <Unlock className="w-2.5 h-2.5 text-emerald-400" /> Unlocked
+                            </span>
+                          )}
                           {isOn && (
                             <span className="text-blue-400 text-[10px]">
                               {ev.mode || 'AUTO'} {resolvedTempF ? `${tempUnit === 'F' ? `${resolvedTempF}°F` : `${resolvedTempC}°C`}` : ''}
@@ -2381,6 +2406,44 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Wall Thermostat Lockout Mode */}
+            <div className="space-y-2 pt-3 border-t border-slate-800">
+              <label className="block text-xs font-semibold text-slate-300">
+                Wall Thermostat Permission
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEventForm({ ...eventForm, remote_lock: 'PERMIT' })}
+                  className={`py-2 px-3 rounded-xl text-xs font-bold border transition flex items-center justify-center gap-1.5 ${
+                    (eventForm.remote_lock || 'PERMIT') === 'PERMIT'
+                      ? 'bg-emerald-600/20 border-emerald-500 text-emerald-300 shadow-sm shadow-emerald-950'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Unlock className="w-3.5 h-3.5 text-emerald-400" />
+                  Permit (Unlocked)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEventForm({ ...eventForm, remote_lock: 'PROHIBIT' })}
+                  className={`py-2 px-3 rounded-xl text-xs font-bold border transition flex items-center justify-center gap-1.5 ${
+                    eventForm.remote_lock === 'PROHIBIT'
+                      ? 'bg-amber-600/20 border-amber-500 text-amber-300 shadow-sm shadow-amber-950'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  Lock (Prohibit)
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                {eventForm.remote_lock === 'PROHIBIT'
+                  ? 'Wall thermostats will display "CENTRAL" and reject manual adjustments.'
+                  : 'Room occupants can adjust temperature and settings on the wall unit.'}
+              </p>
+            </div>
 
             <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
               <button

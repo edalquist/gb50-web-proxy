@@ -183,6 +183,7 @@ class ScheduleEventInput(BaseModel):
     set_temp_f: Optional[float] = None
     air_direction: Optional[str] = None
     fan_speed: Optional[str] = None
+    remote_lock: Optional[str] = Field("PERMIT", pattern="^(PERMIT|PROHIBIT)$")
 
     def resolved_temp_c(self) -> Optional[float]:
         if self.set_temp_c is not None:

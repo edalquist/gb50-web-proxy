@@ -103,6 +103,7 @@ export interface ScheduleItem {
   air_direction?: AirDirection;
   fan_speed?: FanSpeed;
   time_str: string;
+  remote_lock?: 'PERMIT' | 'PROHIBIT';
   source_program_id?: number;
   source_program_name?: string;
 }
@@ -116,6 +117,7 @@ export interface ScheduleEventInput {
   set_temp_c?: number;
   fan_speed?: FanSpeed;
   air_direction?: AirDirection;
+  remote_lock?: 'PERMIT' | 'PROHIBIT';
 }
 
 export interface AlarmRecord {

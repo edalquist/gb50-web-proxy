@@ -242,7 +242,8 @@ apt-get install -y --no-install-recommends \
     git \
     curl \
     rsync \
-    openssl
+    openssl \
+    ca-certificates
 
 # Check Node.js & npm (needed if web/dist is not present or rebuild requested)
 HAS_PREBUILT_WEB=false
@@ -303,7 +304,7 @@ if [[ "${IN_PLACE}" == false && "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; the
         --exclude 'python-gb50' \
         "${SOURCE_PROXY_DIR}/" "${TARGET_DIR}/"
 
-    if [[ -n "${SOURCE_LIB_DIR}" && -d "${SOURCE_LIB_DIR}" ]]; then
+    if [[ -n "${SOURCE_LIB_DIR}" && -f "${SOURCE_LIB_DIR}/gb50/__init__.py" ]]; then
         info "Deploying python-gb50 library to ${TARGET_DIR}/python-gb50..."
         mkdir -p "${TARGET_DIR}/python-gb50"
         rsync -a --delete \
@@ -316,14 +317,32 @@ if [[ "${IN_PLACE}" == false && "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; the
     fi
 fi
 
-# Ensure python-gb50 is present; clone from GitHub if not found locally
-if [[ ! -d "${TARGET_DIR}/python-gb50" && ( -z "${SOURCE_LIB_DIR}" || ! -d "${SOURCE_LIB_DIR}" ) ]]; then
-    info "Local python-gb50 library not found alongside gb50-web-proxy."
-    info "Cloning python-gb50 from ${GB50_REPO_URL} into ${TARGET_DIR}/python-gb50..."
+# Ensure python-gb50 is present; clone or download archive from GitHub if not found locally
+if [[ ! -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
+    info "python-gb50 library not found at ${TARGET_DIR}/python-gb50."
+    rm -rf "${TARGET_DIR}/python-gb50"
+    mkdir -p "${TARGET_DIR}/python-gb50"
+
+    FETCHED=false
     if command -v git >/dev/null 2>&1; then
-        git clone "${GB50_REPO_URL}" "${TARGET_DIR}/python-gb50" || {
-            warn "git clone failed. Will attempt direct pip install from git URL."
-        }
+        info "Cloning python-gb50 from ${GB50_REPO_URL} into ${TARGET_DIR}/python-gb50..."
+        if git clone --depth 1 "${GB50_REPO_URL}" "${TARGET_DIR}/python-gb50"; then
+            FETCHED=true
+        else
+            warn "git clone failed. Falling back to downloading release archive..."
+        fi
+    fi
+
+    if [[ "${FETCHED}" == false || ! -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
+        info "Downloading python-gb50 source archive via curl..."
+        rm -rf "${TARGET_DIR}/python-gb50"
+        mkdir -p "${TARGET_DIR}/python-gb50"
+        if curl -sSL "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz" | tar -xz -C "${TARGET_DIR}/python-gb50" --strip-components=1 2>/dev/null; then
+            FETCHED=true
+            info "Downloaded and extracted python-gb50 archive successfully."
+        else
+            warn "Archive download via curl also failed."
+        fi
     fi
 elif [[ -d "${TARGET_DIR}/python-gb50/.git" && ( -z "${SOURCE_LIB_DIR}" || ! -d "${SOURCE_LIB_DIR}" ) ]]; then
     info "Updating existing python-gb50 repository in ${TARGET_DIR}/python-gb50..."
@@ -348,24 +367,22 @@ if [[ ! -f "${TARGET_DIR}/web/dist/index.html" ]]; then
 fi
 
 # --- 11. Create Python Virtual Environment ---
-info "Setting up Python virtual environment in ${TARGET_DIR}/.venv..."
+info "Setting up clean Python virtual environment in ${TARGET_DIR}/.venv..."
+rm -rf "${TARGET_DIR}/.venv"
 python3 -m venv "${TARGET_DIR}/.venv"
-"${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
-
-# Clean up any stale editable hooks or .pth files from previous attempts
-rm -f "${TARGET_DIR}"/.venv/lib/python*/site-packages/__editable__* 2>/dev/null || true
-rm -f "${TARGET_DIR}"/.venv/lib/python*/site-packages/*gb50*.pth 2>/dev/null || true
+"${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install python-gb50 library first (resolves gb50 requirement for gb50-web-proxy)
-if [[ -d "${TARGET_DIR}/python-gb50" ]]; then
+if [[ -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
     info "Installing python-gb50 library into virtual environment..."
-    "${TARGET_DIR}/.venv/bin/pip" install "${TARGET_DIR}/python-gb50"
-elif [[ -n "${SOURCE_LIB_DIR}" && -d "${SOURCE_LIB_DIR}" ]]; then
+    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}/python-gb50"
+elif [[ -n "${SOURCE_LIB_DIR}" && -f "${SOURCE_LIB_DIR}/gb50/__init__.py" ]]; then
     info "Installing python-gb50 from ${SOURCE_LIB_DIR}..."
-    "${TARGET_DIR}/.venv/bin/pip" install "${SOURCE_LIB_DIR}"
+    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${SOURCE_LIB_DIR}"
 else
-    info "Installing python-gb50 directly from ${GB50_REPO_URL} via pip..."
-    "${TARGET_DIR}/.venv/bin/pip" install "git+${GB50_REPO_URL}" || {
+    info "Installing python-gb50 directly from GitHub via pip..."
+    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "git+${GB50_REPO_URL}" || \
+    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz" || {
         error "Could not install required python-gb50 library."
         error "Please clone https://github.com/edalquist/python-gb50.git next to gb50-web-proxy and re-run."
         exit 1
@@ -374,21 +391,15 @@ fi
 
 # Install gb50-web-proxy and dependencies
 info "Installing gb50-web-proxy into virtual environment..."
-"${TARGET_DIR}/.venv/bin/pip" install "${TARGET_DIR}"
+"${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}"
 
 # Verify python environment and gb50 import
 info "Verifying gb50 module import in virtual environment..."
-if "${TARGET_DIR}/.venv/bin/python" -c "import gb50; from gb50.client import GB50Client; print('Module gb50 verified successfully')" >/dev/null 2>&1; then
+if "${TARGET_DIR}/.venv/bin/python" -c "import gb50; from gb50.client import GB50Client; print('[SUCCESS] gb50 module verified successfully')"; then
     success "Python gb50 module import verified."
 else
-    warn "Direct import from virtualenv failed. Checking sys.path fallback..."
-    if [[ -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
-        info "Local fallback verified at ${TARGET_DIR}/python-gb50/gb50."
-    else
-        error "Failed to verify gb50 import in ${TARGET_DIR}/.venv."
-        "${TARGET_DIR}/.venv/bin/python" -c "import gb50" || true
-        exit 1
-    fi
+    error "Failed to verify gb50 import in ${TARGET_DIR}/.venv."
+    exit 1
 fi
 
 # --- 12. Set Directory Permissions ---

@@ -300,6 +300,7 @@ if [[ "${IN_PLACE}" == false && "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; the
         --exclude '.pytest_cache' \
         --exclude '*.pyc' \
         --exclude '.git' \
+        --exclude 'python-gb50' \
         "${SOURCE_PROXY_DIR}/" "${TARGET_DIR}/"
 
     if [[ -n "${SOURCE_LIB_DIR}" && -d "${SOURCE_LIB_DIR}" ]]; then
@@ -326,7 +327,8 @@ if [[ ! -d "${TARGET_DIR}/python-gb50" && ( -z "${SOURCE_LIB_DIR}" || ! -d "${SO
     fi
 elif [[ -d "${TARGET_DIR}/python-gb50/.git" && ( -z "${SOURCE_LIB_DIR}" || ! -d "${SOURCE_LIB_DIR}" ) ]]; then
     info "Updating existing python-gb50 repository in ${TARGET_DIR}/python-gb50..."
-    git -C "${TARGET_DIR}/python-gb50" pull --ff-only 2>/dev/null || true
+    git config --global --add safe.directory "${TARGET_DIR}/python-gb50" 2>/dev/null || true
+    git -C "${TARGET_DIR}/python-gb50" pull --ff-only 2>/dev/null || warn "Could not fast-forward python-gb50 repo; continuing with existing files."
 fi
 
 # --- 10. Build Web Dashboard ---
@@ -350,13 +352,17 @@ info "Setting up Python virtual environment in ${TARGET_DIR}/.venv..."
 python3 -m venv "${TARGET_DIR}/.venv"
 "${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
 
+# Clean up any stale editable hooks or .pth files from previous attempts
+rm -f "${TARGET_DIR}"/.venv/lib/python*/site-packages/__editable__* 2>/dev/null || true
+rm -f "${TARGET_DIR}"/.venv/lib/python*/site-packages/*gb50*.pth 2>/dev/null || true
+
 # Install python-gb50 library first (resolves gb50 requirement for gb50-web-proxy)
 if [[ -d "${TARGET_DIR}/python-gb50" ]]; then
     info "Installing python-gb50 library into virtual environment..."
-    "${TARGET_DIR}/.venv/bin/pip" install -e "${TARGET_DIR}/python-gb50"
+    "${TARGET_DIR}/.venv/bin/pip" install "${TARGET_DIR}/python-gb50"
 elif [[ -n "${SOURCE_LIB_DIR}" && -d "${SOURCE_LIB_DIR}" ]]; then
     info "Installing python-gb50 from ${SOURCE_LIB_DIR}..."
-    "${TARGET_DIR}/.venv/bin/pip" install -e "${SOURCE_LIB_DIR}"
+    "${TARGET_DIR}/.venv/bin/pip" install "${SOURCE_LIB_DIR}"
 else
     info "Installing python-gb50 directly from ${GB50_REPO_URL} via pip..."
     "${TARGET_DIR}/.venv/bin/pip" install "git+${GB50_REPO_URL}" || {
@@ -368,7 +374,22 @@ fi
 
 # Install gb50-web-proxy and dependencies
 info "Installing gb50-web-proxy into virtual environment..."
-"${TARGET_DIR}/.venv/bin/pip" install -e "${TARGET_DIR}"
+"${TARGET_DIR}/.venv/bin/pip" install "${TARGET_DIR}"
+
+# Verify python environment and gb50 import
+info "Verifying gb50 module import in virtual environment..."
+if "${TARGET_DIR}/.venv/bin/python" -c "import gb50; from gb50.client import GB50Client; print('Module gb50 verified successfully')" >/dev/null 2>&1; then
+    success "Python gb50 module import verified."
+else
+    warn "Direct import from virtualenv failed. Checking sys.path fallback..."
+    if [[ -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
+        info "Local fallback verified at ${TARGET_DIR}/python-gb50/gb50."
+    else
+        error "Failed to verify gb50 import in ${TARGET_DIR}/.venv."
+        "${TARGET_DIR}/.venv/bin/python" -c "import gb50" || true
+        exit 1
+    fi
+fi
 
 # --- 12. Set Directory Permissions ---
 chown -R gb50:gb50 "${TARGET_DIR}"

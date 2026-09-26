@@ -37,6 +37,8 @@ Options:
   --with-kiosk            Also install and configure locked-down kiosk display mode
   --kiosk-auto-login ROLE Auto-login role for local kiosk: viewer, operator, admin, disabled (default: viewer)
   --hide-cursor MODE      Mouse cursor hiding: auto, always, never (default: auto)
+  --gb50-repo URL         Git repository URL for python-gb50 library (default: https://github.com/edalquist/python-gb50.git)
+  --gb50-dir DIR          Local path to python-gb50 source directory (if cloned separately)
   --non-interactive       Run without confirmation prompts
   -h, --help              Show this help message
 EOF
@@ -62,6 +64,8 @@ SKIP_WEB_BUILD=false
 WITH_KIOSK=false
 KIOSK_AUTO_LOGIN="viewer"
 KIOSK_HIDE_CURSOR="auto"
+GB50_REPO_URL="https://github.com/edalquist/python-gb50.git"
+GB50_DIR=""
 NON_INTERACTIVE=false
 
 # --- 4. Parse Command-Line Arguments ---
@@ -80,6 +84,8 @@ Options:
   --with-kiosk            Also install and configure locked-down kiosk display mode
   --kiosk-auto-login ROLE Auto-login role for local kiosk: viewer, operator, admin, disabled (default: viewer)
   --hide-cursor MODE      Mouse cursor hiding: auto, always, never (default: auto)
+  --gb50-repo URL         Git repository URL for python-gb50 library (default: https://github.com/edalquist/python-gb50.git)
+  --gb50-dir DIR          Local path to python-gb50 source directory (if cloned separately)
   --non-interactive       Run without confirmation prompts
   -h, --help              Show this help message
 EOF
@@ -128,6 +134,14 @@ while [[ $# -gt 0 ]]; do
             KIOSK_HIDE_CURSOR="$2"
             shift 2
             ;;
+        --gb50-repo)
+            GB50_REPO_URL="$2"
+            shift 2
+            ;;
+        --gb50-dir)
+            GB50_DIR="$2"
+            shift 2
+            ;;
         --non-interactive)
             NON_INTERACTIVE=true
             shift
@@ -162,27 +176,24 @@ SOURCE_LIB_DIR=""
 if [[ -f "${SCRIPT_DIR}/../server/main.py" ]]; then
     # Running from inside gb50-web-proxy/scripts
     SOURCE_PROXY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-    if [[ -d "${SOURCE_PROXY_DIR}/../python-gb50" ]]; then
-        SOURCE_LIB_DIR="$(cd "${SOURCE_PROXY_DIR}/../python-gb50" && pwd)"
-    fi
 elif [[ -d "${SCRIPT_DIR}/../gb50-web-proxy" ]]; then
     # Running from church_ac/scripts
     SOURCE_PROXY_DIR="$(cd "${SCRIPT_DIR}/../gb50-web-proxy" && pwd)"
-    if [[ -d "${SCRIPT_DIR}/../python-gb50" ]]; then
-        SOURCE_LIB_DIR="$(cd "${SCRIPT_DIR}/../python-gb50" && pwd)"
-    fi
 elif [[ -d "${SCRIPT_DIR}/gb50-web-proxy" ]]; then
     # Running from church_ac root
     SOURCE_PROXY_DIR="$(cd "${SCRIPT_DIR}/gb50-web-proxy" && pwd)"
-    if [[ -d "${SCRIPT_DIR}/python-gb50" ]]; then
-        SOURCE_LIB_DIR="$(cd "${SCRIPT_DIR}/python-gb50" && pwd)"
-    fi
 elif [[ -f "${SCRIPT_DIR}/server/main.py" ]]; then
     # Running from gb50-web-proxy root
     SOURCE_PROXY_DIR="${SCRIPT_DIR}"
-    if [[ -d "${SCRIPT_DIR}/../python-gb50" ]]; then
-        SOURCE_LIB_DIR="$(cd "${SCRIPT_DIR}/../python-gb50" && pwd)"
-    fi
+fi
+
+# Locate python-gb50 driver library
+if [[ -n "${GB50_DIR}" && -d "${GB50_DIR}" ]]; then
+    SOURCE_LIB_DIR="$(cd "${GB50_DIR}" && pwd)"
+elif [[ -d "${SOURCE_PROXY_DIR}/../python-gb50" ]]; then
+    SOURCE_LIB_DIR="$(cd "${SOURCE_PROXY_DIR}/../python-gb50" && pwd)"
+elif [[ -d "${SOURCE_PROXY_DIR}/python-gb50" ]]; then
+    SOURCE_LIB_DIR="$(cd "${SOURCE_PROXY_DIR}/python-gb50" && pwd)"
 fi
 
 if [[ -z "${SOURCE_PROXY_DIR}" || ! -f "${SOURCE_PROXY_DIR}/server/main.py" ]]; then
@@ -195,7 +206,7 @@ if [[ "${IN_PLACE}" == true ]]; then
 fi
 
 info "Source Web Proxy : ${SOURCE_PROXY_DIR}"
-info "Source Driver Lib: ${SOURCE_LIB_DIR:-'(not found, will install from repository or wheel)'}"
+info "Source Driver Lib: ${SOURCE_LIB_DIR:-"(not found locally; will clone from ${GB50_REPO_URL})"}"
 info "Target Directory : ${TARGET_DIR}"
 info "Kiosk Mode UI    : ${WITH_KIOSK}"
 
@@ -228,6 +239,7 @@ apt-get install -y --no-install-recommends \
     python3-venv \
     python3-pip \
     python3-setuptools \
+    git \
     curl \
     rsync \
     openssl
@@ -303,6 +315,17 @@ if [[ "${IN_PLACE}" == false && "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; the
     fi
 fi
 
+# Ensure python-gb50 is present; clone from GitHub if not found locally
+if [[ ! -d "${TARGET_DIR}/python-gb50" && ( -z "${SOURCE_LIB_DIR}" || ! -d "${SOURCE_LIB_DIR}" ) ]]; then
+    info "Local python-gb50 library not found alongside gb50-web-proxy."
+    info "Cloning python-gb50 from ${GB50_REPO_URL} into ${TARGET_DIR}/python-gb50..."
+    if command -v git >/dev/null 2>&1; then
+        git clone "${GB50_REPO_URL}" "${TARGET_DIR}/python-gb50" || {
+            warn "git clone failed. Will attempt direct pip install from git URL."
+        }
+    fi
+fi
+
 # --- 10. Build Web Dashboard ---
 if [[ "${SKIP_WEB_BUILD}" == false ]]; then
     if command -v npm >/dev/null 2>&1 && [[ -f "${TARGET_DIR}/web/package.json" ]]; then
@@ -324,13 +347,20 @@ info "Setting up Python virtual environment in ${TARGET_DIR}/.venv..."
 python3 -m venv "${TARGET_DIR}/.venv"
 "${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
 
-# Install python-gb50 library first
+# Install python-gb50 library first (resolves gb50 requirement for gb50-web-proxy)
 if [[ -d "${TARGET_DIR}/python-gb50" ]]; then
     info "Installing python-gb50 library into virtual environment..."
     "${TARGET_DIR}/.venv/bin/pip" install -e "${TARGET_DIR}/python-gb50"
 elif [[ -n "${SOURCE_LIB_DIR}" && -d "${SOURCE_LIB_DIR}" ]]; then
     info "Installing python-gb50 from ${SOURCE_LIB_DIR}..."
     "${TARGET_DIR}/.venv/bin/pip" install -e "${SOURCE_LIB_DIR}"
+else
+    info "Installing python-gb50 directly from ${GB50_REPO_URL} via pip..."
+    "${TARGET_DIR}/.venv/bin/pip" install "git+${GB50_REPO_URL}" || {
+        error "Could not install required python-gb50 library."
+        error "Please clone https://github.com/edalquist/python-gb50.git next to gb50-web-proxy and re-run."
+        exit 1
+    }
 fi
 
 # Install gb50-web-proxy and dependencies

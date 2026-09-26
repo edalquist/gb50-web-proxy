@@ -31,14 +31,14 @@ The automated installation scripts configure both the background proxy daemon an
 
 ### Option A: Complete Install (Proxy Service + Locked-Down Kiosk UI)
 
-Clone the repository and run the unified installer with `--with-kiosk`:
+Clone `gb50-web-proxy` and run the unified installer with `--with-kiosk`:
 
 ```bash
-cd /opt  # or user directory
-git clone <repo-url> church_ac
-cd church_ac/gb50-web-proxy
-sudo ./scripts/install.sh --with-kiosk
+git clone https://github.com/edalquist/gb50-web-proxy.git
+cd gb50-web-proxy
+sudo ./scripts/install.sh --server-port 80 --with-kiosk
 ```
+*(Note: If `python-gb50` is not found locally, `install.sh` will automatically clone it from GitHub into `/opt/gb50-proxy/python-gb50`).*
 
 ### Option B: Headless Proxy Service Only
 

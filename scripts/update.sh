@@ -85,7 +85,16 @@ fi
 info "Updating Python dependencies in virtual environment..."
 "${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
 if [[ -d "${TARGET_DIR}/python-gb50" ]]; then
+    if [[ -d "${TARGET_DIR}/python-gb50/.git" ]]; then
+        info "Pulling latest code for python-gb50..."
+        git -C "${TARGET_DIR}/python-gb50" pull --ff-only 2>/dev/null || true
+    fi
     "${TARGET_DIR}/.venv/bin/pip" install -e "${TARGET_DIR}/python-gb50"
+else
+    info "Installing python-gb50 from GitHub..."
+    git clone https://github.com/edalquist/python-gb50.git "${TARGET_DIR}/python-gb50" 2>/dev/null && \
+        "${TARGET_DIR}/.venv/bin/pip" install -e "${TARGET_DIR}/python-gb50" || \
+        "${TARGET_DIR}/.venv/bin/pip" install "git+https://github.com/edalquist/python-gb50.git"
 fi
 "${TARGET_DIR}/.venv/bin/pip" install -e "${TARGET_DIR}"
 

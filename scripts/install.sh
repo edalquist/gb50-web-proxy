@@ -36,7 +36,7 @@ Options:
   --skip-web-build        Skip npm build if web/dist already exists
   --with-kiosk            Also install and configure locked-down kiosk display mode
   --kiosk-auto-login ROLE Auto-login role for local kiosk: viewer, operator, admin, disabled (default: viewer)
-  --hide-cursor MODE      Mouse cursor hiding: auto, always, never (default: auto)
+  --hide-cursor MODE      Mouse cursor hiding: never, auto, always (default: never)
   --gb50-repo URL         Git repository URL for python-gb50 library (default: https://github.com/edalquist/python-gb50.git)
   --gb50-dir DIR          Local path to python-gb50 source directory (if cloned separately)
   --non-interactive       Run without confirmation prompts
@@ -63,7 +63,7 @@ POLL_INTERVAL="3.0"
 SKIP_WEB_BUILD=false
 WITH_KIOSK=false
 KIOSK_AUTO_LOGIN="viewer"
-KIOSK_HIDE_CURSOR="auto"
+KIOSK_HIDE_CURSOR="never"
 GB50_REPO_URL="https://github.com/edalquist/python-gb50.git"
 GB50_DIR=""
 NON_INTERACTIVE=false
@@ -83,7 +83,7 @@ Options:
   --skip-web-build        Skip npm build if web/dist already exists
   --with-kiosk            Also install and configure locked-down kiosk display mode
   --kiosk-auto-login ROLE Auto-login role for local kiosk: viewer, operator, admin, disabled (default: viewer)
-  --hide-cursor MODE      Mouse cursor hiding: auto, always, never (default: auto)
+  --hide-cursor MODE      Mouse cursor hiding: never, auto, always (default: never)
   --gb50-repo URL         Git repository URL for python-gb50 library (default: https://github.com/edalquist/python-gb50.git)
   --gb50-dir DIR          Local path to python-gb50 source directory (if cloned separately)
   --non-interactive       Run without confirmation prompts

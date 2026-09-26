@@ -47,7 +47,7 @@ fi
 TARGET_DIR="/opt/gb50-proxy"
 KIOSK_USER="kiosk"
 AUTO_LOGIN="viewer"
-HIDE_CURSOR="auto"
+HIDE_CURSOR="never"
 NON_INTERACTIVE=false
 
 while [[ $# -gt 0 ]]; do
@@ -258,7 +258,7 @@ StandardError=journal
 SyslogIdentifier=gb50-kiosk
 
 # Start X11 on VT7 running our resilient kiosk session script
-ExecStart=/usr/bin/xinit ${TARGET_DIR}/scripts/kiosk-session.sh -- /usr/bin/X :0 vt7 -keeptty -nocursor -s 0 -dpms -noreset -v
+ExecStart=/usr/bin/xinit ${TARGET_DIR}/scripts/kiosk-session.sh -- /usr/bin/X :0 vt7 -keeptty -s 0 -dpms -noreset -v
 
 # Auto-recovery resilience
 Restart=always

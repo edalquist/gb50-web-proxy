@@ -18,12 +18,13 @@ if [[ "${SERVER_PORT}" == "80" ]]; then
 else
     KIOSK_URL="${GB50_KIOSK_URL:-http://localhost:${SERVER_PORT}/}"
 fi
-HIDE_CURSOR="${GB50_KIOSK_HIDE_CURSOR:-auto}" # auto, always, never
+HIDE_CURSOR="${GB50_KIOSK_HIDE_CURSOR:-never}" # never (always visible), auto (hide after 2s inactivity), always (hidden)
 ENABLE_DPMS="${GB50_KIOSK_DPMS:-false}"       # true (sleep display after idle), false (always on)
 DPMS_TIMEOUT="${GB50_KIOSK_DPMS_TIMEOUT:-900}" # seconds before display sleep if enabled (default 15m)
 
 echo "Starting Mitsubishi GB-50 Kiosk Session..."
 echo "Target URL: ${KIOSK_URL}"
+echo "Cursor Mode: ${HIDE_CURSOR}"
 
 # 2. Configure Display Blanking & Energy Settings
 if [[ "${ENABLE_DPMS}" == "true" ]]; then
@@ -38,16 +39,16 @@ else
 fi
 
 # 3. Mouse Cursor Management
-# 'always': hide permanently (recommended for touchscreens)
-# 'auto': hide after 2 seconds of inactivity (hybrid touch / mouse)
-# 'never': keep mouse cursor visible at all times
+# 'never': keep mouse cursor visible at all times (default)
+# 'auto': hide after 2 seconds of inactivity (unhide on mouse movement)
+# 'always': hide permanently (recommended for pure touchscreens)
 if [[ "${HIDE_CURSOR}" == "always" ]]; then
     if command -v unclutter >/dev/null 2>&1; then
-        unclutter -idle 0 -root &
+        unclutter --timeout 0 --fork 2>/dev/null || unclutter -idle 0 -root &
     fi
-elif [[ "${HIDE_CURSOR}" != "never" ]]; then
+elif [[ "${HIDE_CURSOR}" == "auto" ]]; then
     if command -v unclutter >/dev/null 2>&1; then
-        unclutter -idle 2 -root &
+        unclutter --timeout 2 --fork 2>/dev/null || unclutter -idle 2 -root &
     fi
 fi
 

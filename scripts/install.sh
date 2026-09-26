@@ -324,6 +324,9 @@ if [[ ! -d "${TARGET_DIR}/python-gb50" && ( -z "${SOURCE_LIB_DIR}" || ! -d "${SO
             warn "git clone failed. Will attempt direct pip install from git URL."
         }
     fi
+elif [[ -d "${TARGET_DIR}/python-gb50/.git" && ( -z "${SOURCE_LIB_DIR}" || ! -d "${SOURCE_LIB_DIR}" ) ]]; then
+    info "Updating existing python-gb50 repository in ${TARGET_DIR}/python-gb50..."
+    git -C "${TARGET_DIR}/python-gb50" pull --ff-only 2>/dev/null || true
 fi
 
 # --- 10. Build Web Dashboard ---

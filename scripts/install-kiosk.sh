@@ -220,6 +220,14 @@ if [[ -f "${ENV_FILE}" ]]; then
     else
         echo "GB50_KIOSK_HIDE_CURSOR=${HIDE_CURSOR}" >> "${ENV_FILE}"
     fi
+
+    if ! grep -q "GB50_KIOSK_SCREENSAVER" "${ENV_FILE}"; then
+        echo "" >> "${ENV_FILE}"
+        echo "# Screensaver / Burn-in Protection Settings" >> "${ENV_FILE}"
+        echo "# Options: dpms (sleep monitor), blank (black screen), off (disabled)" >> "${ENV_FILE}"
+        echo "GB50_KIOSK_SCREENSAVER=dpms" >> "${ENV_FILE}"
+        echo "GB50_KIOSK_SCREENSAVER_TIMEOUT=600" >> "${ENV_FILE}"
+    fi
 else
     cat <<EOF > "${ENV_FILE}"
 # /etc/default/gb50-proxy
@@ -227,6 +235,8 @@ SERVER_HOST=0.0.0.0
 SERVER_PORT=8080
 GB50_KIOSK_AUTO_LOGIN=${AUTO_LOGIN}
 GB50_KIOSK_HIDE_CURSOR=${HIDE_CURSOR}
+GB50_KIOSK_SCREENSAVER=dpms
+GB50_KIOSK_SCREENSAVER_TIMEOUT=600
 EOF
     chown root:gb50 "${ENV_FILE}" 2>/dev/null || chown root:root "${ENV_FILE}"
     chmod 640 "${ENV_FILE}"
@@ -258,7 +268,7 @@ StandardError=journal
 SyslogIdentifier=gb50-kiosk
 
 # Start X11 on VT7 running our resilient kiosk session script
-ExecStart=/usr/bin/xinit ${TARGET_DIR}/scripts/kiosk-session.sh -- /usr/bin/X :0 vt7 -keeptty -s 0 -dpms -noreset -v
+ExecStart=/usr/bin/xinit ${TARGET_DIR}/scripts/kiosk-session.sh -- /usr/bin/X :0 vt7 -keeptty -noreset -v
 
 # Auto-recovery resilience
 Restart=always

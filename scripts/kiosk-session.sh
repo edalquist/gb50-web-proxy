@@ -19,24 +19,41 @@ else
     KIOSK_URL="${GB50_KIOSK_URL:-http://localhost:${SERVER_PORT}/}"
 fi
 HIDE_CURSOR="${GB50_KIOSK_HIDE_CURSOR:-never}" # never (always visible), auto (hide after 2s inactivity), always (hidden)
-ENABLE_DPMS="${GB50_KIOSK_DPMS:-false}"       # true (sleep display after idle), false (always on)
-DPMS_TIMEOUT="${GB50_KIOSK_DPMS_TIMEOUT:-900}" # seconds before display sleep if enabled (default 15m)
+
+# Screensaver & Burn-in Protection Settings
+# Modes:
+#   'dpms'  : Powers off / puts monitor into sleep mode after timeout (best burn-in & power saving)
+#   'blank' : Turns screen solid black without monitor sleep (instant sub-millisecond touch wake)
+#   'off'   : Keeps display always on
+SCREENSAVER_MODE="${GB50_KIOSK_SCREENSAVER:-${GB50_KIOSK_DPMS:-dpms}}"
+if [[ "${SCREENSAVER_MODE}" == "true" ]]; then SCREENSAVER_MODE="dpms"; fi
+if [[ "${SCREENSAVER_MODE}" == "false" ]]; then SCREENSAVER_MODE="off"; fi
+SCREENSAVER_TIMEOUT="${GB50_KIOSK_SCREENSAVER_TIMEOUT:-${GB50_KIOSK_DPMS_TIMEOUT:-600}}" # default: 10 minutes (600s)
 
 echo "Starting Mitsubishi GB-50 Kiosk Session..."
 echo "Target URL: ${KIOSK_URL}"
 echo "Cursor Mode: ${HIDE_CURSOR}"
+echo "Screensaver: ${SCREENSAVER_MODE} (${SCREENSAVER_TIMEOUT}s timeout)"
 
-# 2. Configure Display Blanking & Energy Settings
-if [[ "${ENABLE_DPMS}" == "true" ]]; then
-    xset +dpms
-    xset dpms "${DPMS_TIMEOUT}" "${DPMS_TIMEOUT}" "${DPMS_TIMEOUT}"
-    xset s "${DPMS_TIMEOUT}"
-    echo "Display sleep configured for ${DPMS_TIMEOUT}s of inactivity."
-else
-    xset s off       # Turn off screen saver
-    xset -dpms       # Disable DPMS power saving
-    xset s noblank   # Do not blank the video device
-fi
+# 2. Configure Display Blanking, DPMS & Screensaver Settings
+case "${SCREENSAVER_MODE}" in
+    dpms)
+        xset +dpms
+        xset dpms "${SCREENSAVER_TIMEOUT}" "${SCREENSAVER_TIMEOUT}" "${SCREENSAVER_TIMEOUT}"
+        xset s blank
+        xset s "${SCREENSAVER_TIMEOUT}"
+        ;;
+    blank)
+        xset -dpms
+        xset s blank
+        xset s "${SCREENSAVER_TIMEOUT}"
+        ;;
+    off|*)
+        xset s off
+        xset -dpms
+        xset s noblank
+        ;;
+esac
 
 # 3. Mouse Cursor Management
 # 'never': keep mouse cursor visible at all times (default)

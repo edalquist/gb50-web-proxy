@@ -19,7 +19,7 @@ StandardError=journal
 SyslogIdentifier=gb50-kiosk
 
 # Start X11 on VT7 running our resilient kiosk session script
-ExecStart=/usr/bin/xinit /opt/gb50-proxy/scripts/kiosk-session.sh -- /usr/bin/X :0 vt7 -keeptty -s 0 -dpms -noreset -v
+ExecStart=/usr/bin/xinit /opt/gb50-proxy/scripts/kiosk-session.sh -- /usr/bin/X :0 vt7 -keeptty -noreset -v
 
 # Auto-recovery resilience
 Restart=always

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 
 export type MainTab = 'dashboard' | 'ventilation' | 'schedules' | 'admin';
-export type AdminSubTab = 'system' | 'zones' | 'interlocks' | 'clock' | 'setback' | 'licenses' | 'security' | 'diagnostics';
-export type ScheduleSubTab = 'programs' | 'planner' | 'matrix';
+export type AdminSubTab = 'system' | 'zones' | 'interlocks' | 'clock' | 'setback' | 'licenses' | 'security' | 'diagnostics' | 'debug';
+export type ScheduleSubTab = 'schedules' | 'matrix' | 'overview' | 'new' | 'review' | 'programs' | 'planner';
 
 export interface RouteState {
   path: string;
@@ -40,11 +40,10 @@ export function parseLocation(): RouteState {
     };
   }
 
-  // 3. Schedules: /schedules, /schedules/programs, /schedules/planner, /schedules/matrix
+  // 3. Schedules: /schedules (default 'schedules'), /schedules/matrix
   if (path.startsWith('/schedules')) {
     const rawSub = path.split('/')[2];
-    const validSubs: ScheduleSubTab[] = ['programs', 'planner', 'matrix'];
-    const scheduleSubTab: ScheduleSubTab = validSubs.includes(rawSub as any) ? (rawSub as ScheduleSubTab) : 'programs';
+    const scheduleSubTab: ScheduleSubTab = rawSub === 'matrix' ? 'matrix' : 'schedules';
     return {
       path,
       tab: 'schedules',
@@ -57,7 +56,7 @@ export function parseLocation(): RouteState {
   if (path.startsWith('/admin')) {
     const rawSub = path.split('/')[2];
     const validSubs: AdminSubTab[] = [
-      'system', 'zones', 'interlocks', 'clock', 'setback', 'licenses', 'security', 'diagnostics'
+      'system', 'zones', 'interlocks', 'clock', 'setback', 'licenses', 'security', 'diagnostics', 'debug'
     ];
     const adminSubTab: AdminSubTab = validSubs.includes(rawSub as any) ? (rawSub as AdminSubTab) : 'system';
     return {

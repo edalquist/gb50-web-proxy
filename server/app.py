@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from gb50.client import GB50Client
 from gb50.state_manager import StateManager
 from .routes import router, get_state_mgr
+from .schedule_db import schedule_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -30,6 +31,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        schedule_db.seed_mock_defaults_if_empty()
         await state_manager.start()
         yield
         await state_manager.stop()

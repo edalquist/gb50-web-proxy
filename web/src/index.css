@@ -1,10 +1,13 @@
+@import './staff-scheduler.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-100;
+    background-color: #050918;
+    color: var(--text);
   }
 }
 

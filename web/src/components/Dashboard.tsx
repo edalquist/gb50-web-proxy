@@ -14,6 +14,7 @@ import {
 import { GroupStatus, GroupControlRequest } from '../types';
 import { ZoneCard } from './ZoneCard';
 import { BulkEditModal } from './BulkEditModal';
+import { ManualControlsModal } from './ManualControlsModal';
 import { useAuth } from '../AuthContext';
 
 interface DashboardProps {
@@ -23,6 +24,7 @@ interface DashboardProps {
   onOpenDetails: (group: GroupStatus) => void;
   onResetFilter: (groupId: number) => void;
   onBatchControl: (updates: Record<number, GroupControlRequest>) => Promise<void>;
+  onApplyPreset?: (preset: 'all_on' | 'all_off' | string) => Promise<void>;
   initialFilter?: string;
   onFilterChange?: (filter: string) => void;
 }
@@ -34,6 +36,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onOpenDetails,
   onResetFilter,
   onBatchControl,
+  onApplyPreset,
   initialFilter,
   onFilterChange,
 }) => {
@@ -43,6 +46,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [filterFloor, setFilterFloor] = useState<'all' | 'floor1' | 'floor2' | 'lossnay' | 'running' | 'dirty'>(
     (initialFilter as any) || 'all'
   );
+
+  // Manual Controls Modal state
+  const [manualAction, setManualAction] = useState<'all_on' | 'all_off' | null>(null);
+  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [manualLoading, setManualLoading] = useState(false);
 
   // Bulk Edit / Selection state
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -178,6 +186,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
     await onBatchControl(batch);
   };
 
+  const handleConfirmManualAction = async () => {
+    if (!manualAction) return;
+    setManualLoading(true);
+    try {
+      if (onApplyPreset) {
+        await onApplyPreset(manualAction);
+      } else {
+        const batch: Record<number, GroupControlRequest> = {};
+        for (const g of groups) {
+          batch[g.group_id] = manualAction === 'all_on' ? { drive: 'ON', mode: 'AUTO', set_temp_f: 70 } : { drive: 'OFF' };
+        }
+        await onBatchControl(batch);
+      }
+      setIsManualModalOpen(false);
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Floor Quick Summary Cards */}
@@ -297,9 +324,37 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           {/* Bulk Edit Mode Toggle Button */}
+          {/* Bulk & Manual Batch Controls */}
           {!isViewer && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center flex-wrap gap-2">
               <button
+                type="button"
+                onClick={() => {
+                  setManualAction('all_on');
+                  setIsManualModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-semibold transition"
+                title="Turn ON all units with confirmation"
+              >
+                <Power className="w-3.5 h-3.5 text-emerald-400" />
+                <span>All Units ON...</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setManualAction('all_off');
+                  setIsManualModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-rose-300 border border-rose-500/30 rounded-xl text-xs font-semibold transition"
+                title="Turn OFF all units with confirmation"
+              >
+                <Power className="w-3.5 h-3.5 text-rose-400" />
+                <span>All Units OFF...</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => {
                   if (isSelectionMode) {
                     handleExitSelectionMode();
@@ -307,7 +362,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     setIsSelectionMode(true);
                   }
                 }}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition border ${
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition border ${
                   isSelectionMode
                     ? 'bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-950'
                     : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
@@ -486,6 +541,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
           }}
         />
       )}
+
+      {/* Manual Building Override Modal */}
+      <ManualControlsModal
+        isOpen={isManualModalOpen}
+        action={manualAction || 'all_off'}
+        totalSpaces={groups.length}
+        loading={manualLoading}
+        onClose={() => setIsManualModalOpen(false)}
+        onConfirm={handleConfirmManualAction}
+      />
     </div>
   );
 };

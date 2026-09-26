@@ -1,17 +1,4 @@
 import React from 'react';
-import { 
-  Building2, 
-  Power, 
-  Radio, 
-  Layers, 
-  Wind, 
-  Calendar, 
-  Settings, 
-  LogOut, 
-  ShieldCheck, 
-  CheckCircle2, 
-  Eye 
-} from 'lucide-react';
 import { SystemInfo } from '../types';
 import { useAuth } from '../AuthContext';
 
@@ -22,11 +9,9 @@ interface HeaderProps {
   setActiveTab: (tab: 'dashboard' | 'ventilation' | 'schedules' | 'admin') => void;
   tempUnit: 'F' | 'C';
   setTempUnit: (u: 'F' | 'C') => void;
-  onApplyPreset: (preset: 'all_on' | 'all_off' | 'occupied' | 'unoccupied' | string) => void;
   runningCount: number;
   dirtyFilterCount: number;
   alarmCount: number;
-  loadingPreset: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -36,186 +21,131 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   tempUnit,
   setTempUnit,
-  onApplyPreset,
   runningCount,
   dirtyFilterCount,
   alarmCount,
-  loadingPreset,
 }) => {
   const { user, logout } = useAuth();
-  const isViewer = user?.role === 'viewer';
   const isAdmin = user?.role === 'admin';
 
   return (
-    <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-30 shadow-md">
-      {/* Top Banner */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-wrap items-center justify-between gap-4">
-        {/* Brand & System Title */}
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-blue-600/20 text-blue-400 rounded-xl border border-blue-500/30">
-            <Building2 className="w-6 h-6" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-slate-100 tracking-tight">
-                {systemInfo?.system_name || 'GB-50 Central Controller'}
-              </h1>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-mono">
-                {systemInfo?.model || 'GB-50ADA-A'} v{systemInfo?.version || '2.80'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-400">
-              Centralized HVAC Management • {runningCount} Active Zones
-            </p>
-          </div>
-        </div>
-
-        {/* Global Quick Action Batch Controls */}
-        <div className="flex items-center flex-wrap gap-2">
-          {!isViewer && (
-            <>
-              <button
-                onClick={() => onApplyPreset('all_on')}
-                disabled={loadingPreset}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30 text-xs font-semibold transition disabled:opacity-50"
-                title="Turn ON all indoor units to 70°F"
-              >
-                <Power className="w-3.5 h-3.5 text-emerald-400" />
-                All Units ON
-              </button>
-
-              <button
-                onClick={() => onApplyPreset('all_off')}
-                disabled={loadingPreset}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/40 hover:bg-rose-600/30 text-xs font-semibold transition disabled:opacity-50"
-                title="Turn OFF all configured HVAC and ventilation units"
-              >
-                <Power className="w-3.5 h-3.5 text-rose-400" />
-                All Units OFF
-              </button>
-            </>
-          )}
-
-          {/* Unit Toggle */}
-          <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 text-xs font-medium ml-2">
-            <button
-              onClick={() => setTempUnit('F')}
-              className={`px-2.5 py-1 rounded-md transition ${
-                tempUnit === 'F' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              °F
-            </button>
-            <button
-              onClick={() => setTempUnit('C')}
-              className={`px-2.5 py-1 rounded-md transition ${
-                tempUnit === 'C' ? 'bg-blue-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              °C
-            </button>
-          </div>
-
-          {/* WebSocket Status */}
-          <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
-              wsConnected
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                : 'bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse'
-            }`}
-          >
-            <Radio className="w-3 h-3" />
-            <span>{wsConnected ? 'Live' : 'Connecting'}</span>
-          </div>
-
-          {/* Logged In User Profile & Sign Out */}
-          {user && (
-            <div className="flex items-center gap-2 pl-3 ml-2 border-l border-slate-800">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800 border border-slate-700 text-xs text-slate-200">
-                {isAdmin ? (
-                  <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
-                ) : isViewer ? (
-                  <Eye className="w-3.5 h-3.5 text-amber-400" />
-                ) : (
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                )}
-                <span className="font-bold text-slate-100">{user.display_name}</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-slate-900 text-slate-400 uppercase font-mono tracking-wider">
-                  {user.role}
-                </span>
-              </div>
-
-              <button
-                onClick={logout}
-                title="Sign out of HVAC management gateway"
-                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-transparent hover:border-rose-500/20 transition"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          )}
+    <header className="mock-header">
+      {/* Brand */}
+      <div className="brand">
+        <div className="logo">⌂</div>
+        <div>
+          <strong>{systemInfo?.system_name || 'Facility HVAC'}</strong>
+          <small>{runningCount > 0 ? `${runningCount} spaces active` : 'Building comfort'}</small>
         </div>
       </div>
 
-      {/* Navigation Tabs */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex space-x-1 border-t border-slate-800/80">
+      {/* Nav */}
+      <nav aria-label="Primary">
         <button
+          type="button"
+          className={activeTab === 'dashboard' ? 'active' : ''}
           onClick={() => setActiveTab('dashboard')}
-          className={`flex items-center gap-2 py-3 px-4 text-sm font-medium border-b-2 transition ${
-            activeTab === 'dashboard'
-              ? 'border-blue-500 text-blue-400 bg-blue-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
-          }`}
         >
-          <Layers className="w-4 h-4" />
-          Zone Dashboard
+          Dashboard
         </button>
-
         <button
-          onClick={() => setActiveTab('ventilation')}
-          className={`flex items-center gap-2 py-3 px-4 text-sm font-medium border-b-2 transition ${
-            activeTab === 'ventilation'
-              ? 'border-blue-500 text-blue-400 bg-blue-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
-          }`}
-        >
-          <Wind className="w-4 h-4" />
-          Fresh Air Ventilation (LOSSNAY)
-        </button>
-
-        <button
+          type="button"
+          className={activeTab === 'schedules' ? 'active' : ''}
           onClick={() => setActiveTab('schedules')}
-          className={`flex items-center gap-2 py-3 px-4 text-sm font-medium border-b-2 transition ${
-            activeTab === 'schedules'
-              ? 'border-blue-500 text-blue-400 bg-blue-500/5'
-              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
-          }`}
         >
-          <Calendar className="w-4 h-4" />
           Schedules
         </button>
-
+        <button
+          type="button"
+          className={activeTab === 'ventilation' ? 'active' : ''}
+          onClick={() => setActiveTab('ventilation')}
+        >
+          Fresh Air
+        </button>
         {isAdmin && (
           <button
+            type="button"
+            className={activeTab === 'admin' ? 'active' : ''}
             onClick={() => setActiveTab('admin')}
-            className={`flex items-center gap-2 py-3 px-4 text-sm font-medium border-b-2 transition ${
-              activeTab === 'admin'
-                ? 'border-blue-500 text-blue-400 bg-blue-500/5'
-                : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
-            }`}
           >
-            <Settings className="w-4 h-4" />
-            Admin & Diagnostics
+            Facilities
             {dirtyFilterCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.2 rounded-full text-xs bg-amber-500/20 text-amber-300 font-mono">
-                {dirtyFilterCount} Filters
+              <span style={{ marginLeft: 6, fontSize: 11, color: '#f0ba5a' }}>
+                ({dirtyFilterCount})
               </span>
             )}
             {alarmCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.2 rounded-full text-xs bg-rose-500/20 text-rose-300 font-mono animate-pulse">
-                {alarmCount} Alarms
+              <span style={{ marginLeft: 6, fontSize: 11, color: '#fa7185' }}>
+                ({alarmCount})
               </span>
             )}
+          </button>
+        )}
+      </nav>
+
+      {/* User Controls */}
+      <div className="user">
+        {/* Unit Toggle */}
+        <div style={{ display: 'flex', background: '#0d1628', borderRadius: '8px', border: '1px solid #2b3856', padding: '2px' }}>
+          <button
+            type="button"
+            onClick={() => setTempUnit('F')}
+            style={{
+              border: 0,
+              background: tempUnit === 'F' ? 'var(--blue)' : 'transparent',
+              color: tempUnit === 'F' ? '#fff' : 'var(--muted)',
+              padding: '4px 8px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: tempUnit === 'F' ? 700 : 500,
+              cursor: 'pointer'
+            }}
+          >
+            °F
+          </button>
+          <button
+            type="button"
+            onClick={() => setTempUnit('C')}
+            style={{
+              border: 0,
+              background: tempUnit === 'C' ? 'var(--blue)' : 'transparent',
+              color: tempUnit === 'C' ? '#fff' : 'var(--muted)',
+              padding: '4px 8px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: tempUnit === 'C' ? 700 : 500,
+              cursor: 'pointer'
+            }}
+          >
+            °C
+          </button>
+        </div>
+
+        {/* Live Status */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: wsConnected ? 'var(--green)' : 'var(--amber)', fontSize: '13px' }}>
+          ● {wsConnected ? 'Live' : 'Connecting'}
+        </span>
+
+        {/* User Badge */}
+        <span>{user ? user.display_name || 'Operations Staff' : 'Operations Staff'}</span>
+
+        {/* Logout */}
+        {user && (
+          <button
+            type="button"
+            onClick={logout}
+            title="Sign out of HVAC management gateway"
+            style={{
+              background: 'transparent',
+              border: '1px solid #33415d',
+              color: 'var(--muted)',
+              borderRadius: '7px',
+              padding: '5px 9px',
+              fontSize: '12px',
+              cursor: 'pointer'
+            }}
+          >
+            Sign out
           </button>
         )}
       </div>

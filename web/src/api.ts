@@ -3,17 +3,27 @@ import {
   SystemInfo, 
   GroupControlRequest, 
   ScheduleItem, 
-  ScheduleProgram,
-  SeasonConfig,
-  SeasonCloneRequest,
-  DuplicateProgramPayload,
-  AlarmRecord,
-  GroupConfigPayload,
-  UnassignedAddressesResponse,
-  UserProfile,
-  LoginResponse,
-  CreateUserPayload,
-  UpdateUserPayload
+  ScheduleProgram, 
+  SeasonConfig, 
+  SeasonCloneRequest, 
+  DuplicateProgramPayload, 
+  AlarmRecord, 
+  GroupConfigPayload, 
+  UnassignedAddressesResponse, 
+  UserProfile, 
+  LoginResponse, 
+  CreateUserPayload, 
+  UpdateUserPayload, 
+  PublishResult, 
+  PublishProgress,
+  SeasonReconcileStatus, 
+  ZoneMetadata, 
+  StaffSchedule,
+  BulkTelemetryDebugResponse,
+  RawScheduleDebugResponse,
+  RawTopologyDebugResponse,
+  RawSystemDebugResponse,
+  RawXmlQueryResult
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -69,6 +79,16 @@ export async function fetchCurrentUser(): Promise<UserProfile> {
   const res = await authFetch(`${API_BASE}/auth/me`);
   if (!res.ok) throw new Error(`Not authenticated: ${res.statusText}`);
   return res.json();
+}
+
+export async function fetchKioskSession(): Promise<LoginResponse> {
+  const res = await fetch(`${API_BASE}/auth/kiosk-session`);
+  if (!res.ok) {
+    throw new Error('Kiosk auto-login not available');
+  }
+  const data: LoginResponse = await res.json();
+  setAuthToken(data.access_token);
+  return data;
 }
 
 export async function changeOwnPassword(oldPassword: string, newPassword: string): Promise<{ status: string; message: string }> {
@@ -347,6 +367,8 @@ export async function createScheduleProgram(data: {
   season_scope?: string[];
   weekly_pattern?: Record<number, any[]>;
   assigned_group_ids?: number[];
+  metadata_json?: Record<string, any>;
+  publish_to_hardware?: boolean;
 }): Promise<ScheduleProgram> {
   const res = await authFetch(`${API_BASE}/schedules/programs`, {
     method: 'POST',
@@ -369,6 +391,9 @@ export async function updateScheduleProgram(
     season_id?: number;
     season_scope?: string[];
     weekly_pattern?: Record<number, any[]>;
+    assigned_group_ids?: number[];
+    metadata_json?: Record<string, any>;
+    publish_to_hardware?: boolean;
   }
 ): Promise<ScheduleProgram> {
   const res = await authFetch(`${API_BASE}/schedules/programs/${id}`, {
@@ -626,12 +651,161 @@ export async function fetchUnassignedAddresses(): Promise<UnassignedAddressesRes
   return res.json();
 }
 
+// --- Zone Metadata & Space Names ---
+
+export async function fetchZoneMetadata(): Promise<Record<number, ZoneMetadata>> {
+  const res = await authFetch(`${API_BASE}/zones/metadata`);
+  if (!res.ok) throw new Error(`Failed to fetch zone metadata: ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateZoneMetadata(groupId: number, payload: { room_name: string; area_name?: string }): Promise<any> {
+  const res = await authFetch(`${API_BASE}/zones/${groupId}/metadata`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to update room name: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+// --- Season Reconciliation ---
+
+export async function checkSeasonReconciliation(): Promise<SeasonReconcileStatus> {
+  const res = await authFetch(`${API_BASE}/schedules/seasons/reconcile`);
+  if (!res.ok) throw new Error(`Failed to check season reconciliation: ${res.statusText}`);
+  return res.json();
+}
+
+export async function executeSeasonReconciliation(action: 'push_to_controller' | 'pull_from_controller'): Promise<any> {
+  const res = await authFetch(`${API_BASE}/schedules/seasons/reconcile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to execute season reconciliation: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+// --- Staff Schedules & Publishing ---
+
+export async function createStaffSchedule(payload: Partial<StaffSchedule> & Record<string, any>): Promise<ScheduleProgram> {
+  const res = await authFetch(`${API_BASE}/schedules/staff`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to create staff schedule: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function updateStaffSchedule(scheduleId: number, payload: Partial<StaffSchedule> & Record<string, any>): Promise<ScheduleProgram> {
+  const res = await authFetch(`${API_BASE}/schedules/staff/${scheduleId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to update staff schedule: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function publishSchedule(scheduleId: number): Promise<PublishResult> {
+  const res = await authFetch(`${API_BASE}/schedules/${scheduleId}/publish`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to publish schedule: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function publishScheduleStream(
+  scheduleId: number,
+  onProgress?: (progress: PublishProgress) => void,
+  removedGroupIds?: number[]
+): Promise<PublishResult> {
+  const token = currentToken;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  let url = `${API_BASE}/schedules/${scheduleId}/publish?stream=true`;
+  if (removedGroupIds && removedGroupIds.length > 0) {
+    url += `&removed_group_ids=${encodeURIComponent(removedGroupIds.join(','))}`;
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to publish schedule: ${res.statusText}`);
+  }
+
+  if (!res.body) {
+    return publishSchedule(scheduleId);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult: PublishResult | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() || '';
+
+    for (const chunk of lines) {
+      const trimmed = chunk.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const jsonStr = trimmed.replace(/^data:\s*/, '');
+      try {
+        const payload = JSON.parse(jsonStr);
+        if (payload.event === 'error') {
+          throw new Error(payload.error || 'Controller error occurred while flashing');
+        } else if (payload.event === 'done') {
+          finalResult = payload.result;
+        } else {
+          onProgress?.(payload);
+        }
+      } catch (err: any) {
+        if (err.message && err.message.includes('Controller error')) throw err;
+        console.warn('Error parsing progress stream chunk:', err);
+      }
+    }
+  }
+
+  if (finalResult) return finalResult;
+  return publishSchedule(scheduleId);
+}
+
 
 // --- Real-time WebSocket Subscription ---
 
 export function subscribeToWebSocket(
   onUpdate: (groups: GroupStatus[]) => void,
-  onStatusChange?: (connected: boolean) => void
+  onStatusChange?: (connected: boolean) => void,
+  onPublishProgress?: (progress: PublishProgress) => void
 ): () => void {
   let ws: WebSocket | null = null;
   let reconnectTimer: number | null = null;
@@ -654,6 +828,8 @@ export function subscribeToWebSocket(
         const data = JSON.parse(event.data);
         if (data.event === 'initial_state' || data.event === 'group_updates') {
           onUpdate(data.groups);
+        } else if (data.event === 'publish_progress') {
+          onPublishProgress?.(data);
         }
       } catch (err) {
         console.error('Error parsing WS message:', err);
@@ -680,3 +856,66 @@ export function subscribeToWebSocket(
     ws?.close();
   };
 }
+
+// --- Admin Controller Raw Data Debug Endpoints ---
+
+export async function fetchRawBulkTelemetry(groupId?: number): Promise<BulkTelemetryDebugResponse> {
+  const url = groupId ? `${API_BASE}/debug/bulk-telemetry?group_id=${groupId}` : `${API_BASE}/debug/bulk-telemetry`;
+  const res = await authFetch(url);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to fetch raw bulk telemetry: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchRawScheduleDebug(groupId: number, season = 1): Promise<RawScheduleDebugResponse> {
+  const res = await authFetch(`${API_BASE}/debug/raw-schedule/${groupId}?season=${season}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to fetch raw schedule registers: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchRawTopologyDebug(): Promise<RawTopologyDebugResponse> {
+  const res = await authFetch(`${API_BASE}/debug/raw-topology`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to fetch raw topology: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchRawSystemDebug(): Promise<RawSystemDebugResponse> {
+  const res = await authFetch(`${API_BASE}/debug/raw-system`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to fetch raw system info: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function executeRawXmlQuery(
+  queryName?: string,
+  customXml?: string,
+  groupId?: number,
+  season?: number
+): Promise<RawXmlQueryResult> {
+  const res = await authFetch(`${API_BASE}/debug/query-xml`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query_name: queryName,
+      custom_xml: customXml,
+      group_id: groupId,
+      season: season,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to execute raw query: ${res.statusText}`);
+  }
+  return res.json();
+}
+

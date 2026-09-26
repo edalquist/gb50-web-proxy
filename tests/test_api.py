@@ -380,3 +380,133 @@ async def test_mnet_address_collision_rejection(mock_system_info, mock_group):
         assert resp.json()["status"] == "success"
 
 
+@pytest.mark.asyncio
+async def test_admin_debug_endpoints(mock_system_info, mock_group):
+    """Verify Admin-only raw controller data debug endpoints and safety guards."""
+    app = create_app(controller_host="192.0.2.90", poll_interval=60.0)
+    app.state.client.get_system_info = AsyncMock(return_value=mock_system_info)
+    mock_group.raw_bulk = "010002140000E6040601000000000000001F0000000100010000010000000000000000000000000000000000000000000000000000000000000000000000000000"
+    app.state.client.get_all_groups = AsyncMock(return_value=[mock_group])
+    
+    mock_xml_resp = (
+        '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+        '<Packet><Command>getResponse</Command><DatabaseManager>'
+        '<SystemData Version="2.80" Model="GB-50ADA-A" Number="00000-001" Name="Example Facility" />'
+        '<ControlGroup><MnetRecord Group="1" GroupNameWeb="Sanctuary" /><MnetGroupRecord Group="1" Model="IC" Address="1" /></ControlGroup>'
+        '<ScheduleControl><TodayList Group="1"><TodayRecord Index="1" Hour="8" Minute="0" Drive="ON" Mode="AUTO" SetTemp="21.5" /></TodayList></ScheduleControl>'
+        '</DatabaseManager></Packet>'
+    )
+    app.state.client._send_xml = AsyncMock(return_value=mock_xml_resp)
+    app.state.state_manager._groups_cache = {1: mock_group}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Unauthenticated requests must return 401
+        unauth_resp = await client.get("/api/v1/debug/bulk-telemetry")
+        assert unauth_resp.status_code == 401
+
+        unauth_query = await client.post("/api/v1/debug/query-xml", json={"query_name": "system_data"})
+        assert unauth_query.status_code == 401
+
+        # 2. Login as admin
+        login_resp = await client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+        assert login_resp.status_code == 200
+        admin_token = login_resp.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+        # 3. GET /debug/bulk-telemetry
+        bulk_resp = await client.get("/api/v1/debug/bulk-telemetry", headers=admin_headers)
+        assert bulk_resp.status_code == 200
+        bulk_data = bulk_resp.json()
+        assert bulk_data["count"] >= 1
+        group_debug = bulk_data["groups"][0]
+        assert group_debug["group_id"] == 1
+        assert group_debug["length_bytes"] == 65
+        assert len(group_debug["hex_dump"]) == 5  # 65 bytes in 16-byte rows -> 5 rows
+        assert len(group_debug["byte_annotations"]) == 65
+        assert group_debug["byte_annotations"][0]["field"] == "Packet Frame Header"
+        assert group_debug["byte_annotations"][1]["field"] == "Operational Drive State"
+
+        # 4. GET /debug/raw-schedule/1
+        sched_resp = await client.get("/api/v1/debug/raw-schedule/1?season=1", headers=admin_headers)
+        assert sched_resp.status_code == 200
+        sched_data = sched_resp.json()
+        assert sched_data["group_id"] == 1
+        assert "today_request_xml" in sched_data
+        assert "today_response_xml" in sched_data
+        assert len(sched_data["today_records"]) >= 1
+        assert sched_data["today_records"][0]["hour"] == 8
+
+        # 5. GET /debug/raw-topology
+        topo_resp = await client.get("/api/v1/debug/raw-topology", headers=admin_headers)
+        assert topo_resp.status_code == 200
+        topo_data = topo_resp.json()
+        assert "request_xml" in topo_data
+        assert "response_xml" in topo_data
+        assert "topology" in topo_data
+
+        # 6. GET /debug/raw-system
+        sys_resp = await client.get("/api/v1/debug/raw-system", headers=admin_headers)
+        assert sys_resp.status_code == 200
+        sys_data = sys_resp.json()
+        assert sys_data["system_info"]["version"] == "2.80"
+
+        # 7. POST /debug/query-xml with safe preset
+        query_resp = await client.post(
+            "/api/v1/debug/query-xml",
+            headers=admin_headers,
+            json={"query_name": "system_data"},
+        )
+        assert query_resp.status_code == 200
+        q_data = query_resp.json()
+        assert q_data["status"] == "success"
+        assert "request_xml" in q_data
+        assert "response_xml" in q_data
+        assert q_data["duration_ms"] >= 0
+
+        # 8. POST /debug/query-xml Safety Guard: Mutating command must be rejected with 400
+        unsafe_resp = await client.post(
+            "/api/v1/debug/query-xml",
+            headers=admin_headers,
+            json={"custom_xml": "<Packet><Command>setRequest</Command><DatabaseManager><ControlGroup /></DatabaseManager></Packet>"},
+        )
+        assert unsafe_resp.status_code == 400
+        assert "Safety Guard" in unsafe_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_kiosk_auto_login():
+    """Verify kiosk auto-login endpoint under various configuration states."""
+    import os
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+
+    # 1. When disabled (default) -> 404
+    os.environ["GB50_KIOSK_AUTO_LOGIN"] = "disabled"
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/auth/kiosk-session")
+        assert resp.status_code == 404
+
+    # 2. When enabled with viewer role -> 200 and role == "viewer"
+    os.environ["GB50_KIOSK_AUTO_LOGIN"] = "viewer"
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/auth/kiosk-session")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "access_token" in data
+        assert data["user"]["role"] == "viewer"
+        assert data["user"]["username"] == "kiosk"
+
+    # 3. When enabled with operator role -> 200 and role == "operator"
+    os.environ["GB50_KIOSK_AUTO_LOGIN"] = "operator"
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/auth/kiosk-session")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user"]["role"] == "operator"
+
+    # Cleanup
+    os.environ["GB50_KIOSK_AUTO_LOGIN"] = "disabled"
+
+
+

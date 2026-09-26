@@ -1,0 +1,43 @@
+[Unit]
+Description=Mitsubishi GB-50 HVAC REST Proxy & Web UI
+Documentation=https://github.com/church-ac/gb50-web-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gb50
+Group=gb50
+WorkingDirectory=/opt/gb50-proxy
+EnvironmentFile=-/etc/default/gb50-proxy
+ExecStart=/opt/gb50-proxy/.venv/bin/python run_server.py
+
+# Auto-restart resilience
+Restart=always
+RestartSec=5s
+TimeoutStopSec=15
+KillMode=mixed
+
+# Sandboxing & Security Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/gb50 /opt/gb50-proxy
+
+# Allow binding to privileged low ports (e.g. port 80 / 443) as unprivileged user
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Unified journal logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gb50-proxy
+
+[Install]
+WantedBy=multi-user.target

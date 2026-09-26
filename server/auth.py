@@ -30,7 +30,8 @@ else:
     _logger.info("GB50_JWT_SECRET not provided; initialized secure secret key.")
 
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24 * 7  # 7 days session
+_exp_hours_env = os.getenv("GB50_JWT_EXPIRATION_HOURS")
+JWT_EXPIRATION_HOURS = int(_exp_hours_env) if _exp_hours_env and _exp_hours_env.isdigit() else 24 * 30  # Default 30 days session
 
 # Default SQLite DB Path
 DEFAULT_DB_PATH = os.path.join(
@@ -142,6 +143,9 @@ class UserDatabase:
 
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        db_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -416,6 +420,24 @@ def require_role(min_role: str):
     return _role_checker
 
 
+def get_or_create_kiosk_user(role: str = "viewer") -> Dict[str, Any]:
+    """Retrieve existing kiosk user or create dedicated kiosk user account."""
+    user = user_db.get_user_by_username("kiosk")
+    if user:
+        if not user.get("enabled", 1) or user.get("role") != role:
+            user_db.update_user(user["id"], role=role, enabled=True)
+            user = user_db.get_user_by_id(user["id"])
+        return user
+    pwd = secrets.token_urlsafe(32)
+    created = user_db.create_user(
+        username="kiosk",
+        password=pwd,
+        role=role,
+        display_name="Kiosk Display",
+    )
+    return created
+
+
 # --- Command-Line User & Password Management / Lockout Recovery ---
 
 def _cli() -> None:
@@ -427,6 +449,7 @@ def _cli() -> None:
         print("  python -m server.auth list")
         print("  python -m server.auth reset-password <username> <new_password>")
         print("  python -m server.auth add-user <username> <password> <role> \"<display_name>\"")
+        print("  python -m server.auth generate-token <username> [hours]")
         print("  python -m server.auth reset-db\n")
         print("Roles: admin, operator, viewer")
         print(f"Database location: {DB_PATH}\n")
@@ -474,6 +497,21 @@ def _cli() -> None:
         else:
             user_db.create_user(username=username, password=password, role=role, display_name=display_name)
             print(f"✓ Created new user '{username}' (Role: {role}, Display: {display_name}).")
+
+    elif cmd == "generate-token":
+        if len(args) < 2:
+            print("Error: Missing username. Usage: python -m server.auth generate-token <username> [hours]")
+            sys.exit(1)
+        username = args[1]
+        hours = int(args[2]) if len(args) >= 3 and args[2].isdigit() else (24 * 365 * 5)
+        user = user_db.get_user_by_username(username)
+        if not user:
+            print(f"Error: User '{username}' not found.")
+            sys.exit(1)
+        token = create_access_token(user, expires_in_hours=hours)
+        print(f"\nGenerated JWT Access Token for '{username}' (Valid for {hours} hours):")
+        print(token)
+        print()
 
     elif cmd == "reset-db":
         if os.path.exists(DB_PATH):

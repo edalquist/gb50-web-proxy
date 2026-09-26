@@ -55,6 +55,8 @@ export interface GroupCapabilities {
 export interface GroupStatus {
   group_id: number;
   name: string;
+  room_name?: string;
+  area_name?: string;
   floor?: number;
   model: ModelType;
   address: number;
@@ -235,6 +237,7 @@ export interface ScheduleProgram {
   season_id?: number;
   season_scope?: string[];
   weekly_pattern: Record<number, ScheduleItem[]>;
+  metadata_json?: Record<string, any>;
   assigned_group_ids: number[];
   sync_status: 'SYNCED' | 'DRIFT_DETECTED' | 'PENDING' | 'ERROR';
   weekly_hours: number;
@@ -242,5 +245,135 @@ export interface ScheduleProgram {
   updated_at?: string;
 }
 
+export interface StaffSchedule {
+  id?: number;
+  name: string;
+  roomIds: number[];
+  recurrence: {
+    kind: 'weekly' | 'once';
+    days: number[]; // 1=Mon..7=Sun
+    startDate?: string;
+    endDate?: string;
+    seasonId?: number;
+  };
+  occupiedStart: string;
+  occupiedEnd: string;
+  temperatureF: number;
+  mode: OperationMode;
+  thermostatAdjustmentsAllowed: boolean;
+  status: 'draft' | 'publishing' | 'published' | 'failed';
+  publishedAt?: string;
+  weeklyHours?: number;
+}
 
+export interface PublishResult {
+  schedule_id: number;
+  success: boolean;
+  total_spaces: number;
+  published_spaces: number;
+  failed_spaces: number;
+  successful_rooms: number[];
+  failed_rooms: Array<{ group_id: number; error: string }>;
+  published_at: string;
+}
 
+export interface PublishProgress {
+  event?: string;
+  schedule_id: number;
+  schedule_name?: string;
+  current: number;
+  total: number;
+  percent: number;
+  group_id?: number;
+  room_name?: string;
+  status: 'flashing' | 'success' | 'failed' | 'completed';
+  error?: string | null;
+  successful_count: number;
+  failed_count: number;
+  room_statuses?: Record<number, 'queued' | 'flashing' | 'success' | 'failed'>;
+}
+
+export interface SeasonReconcileStatus {
+  reconciled: boolean;
+  error?: string;
+  mismatches: Array<{
+    season_id?: number;
+    name?: string;
+    db?: { start_month: number; start_day: number; end_month: number; end_day: number };
+    controller?: { start_month: number; start_day: number; end_month: number; end_day: number };
+    error?: string;
+  }>;
+  db_seasons?: SeasonConfig[];
+}
+
+export interface ZoneMetadata {
+  room_name: string;
+  area_name?: string;
+}
+
+// --- Admin Controller Debug & Telemetry Types ---
+
+export interface HexDumpRow {
+  offset: string;
+  hex: string;
+  ascii: string;
+}
+
+export interface ByteAnnotation {
+  offset: number;
+  hex: string;
+  dec: number;
+  field: string;
+  value: string;
+}
+
+export interface RawBulkGroup {
+  group_id: number;
+  name: string;
+  model: string;
+  address: number;
+  raw_hex: string;
+  length_bytes: number;
+  hex_dump: HexDumpRow[];
+  byte_annotations: ByteAnnotation[];
+  parsed_fields: Record<string, any>;
+}
+
+export interface BulkTelemetryDebugResponse {
+  count: number;
+  groups: RawBulkGroup[];
+}
+
+export interface RawScheduleDebugResponse {
+  group_id: number;
+  season: number;
+  today_request_xml: string;
+  today_response_xml: string;
+  weekly_request_xml: string;
+  weekly_response_xml: string;
+  today_records: ScheduleItem[];
+  weekly_patterns: Record<string, ScheduleItem[]>;
+}
+
+export interface RawTopologyDebugResponse {
+  request_xml: string;
+  response_xml: string;
+  topology: Record<number, any>;
+  interlocks: Array<{ ic_address: number; lc_address: number }>;
+  assigned_addresses: number[];
+  unassigned_addresses: number[];
+}
+
+export interface RawSystemDebugResponse {
+  request_xml: string;
+  response_xml: string;
+  system_info: SystemInfo;
+}
+
+export interface RawXmlQueryResult {
+  status: 'success' | 'error';
+  request_xml: string;
+  response_xml?: string;
+  error?: string;
+  duration_ms: number;
+}

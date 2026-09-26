@@ -29,7 +29,6 @@ export const App: React.FC = () => {
   const [wsConnected, setWsConnected] = useState(false);
   const [tempUnit, setTempUnit] = useState<'F' | 'C'>('F');
   const [selectedGroup, setSelectedGroup] = useState<GroupStatus | null>(null);
-  const [loadingPreset, setLoadingPreset] = useState(false);
 
   // Initial Load
   const loadData = useCallback(async () => {
@@ -116,7 +115,7 @@ export const App: React.FC = () => {
     } else if (tab === 'ventilation') {
       goTo('/ventilation');
     } else if (tab === 'schedules') {
-      goTo('/schedules/' + (route.scheduleSubTab || 'planner'));
+      goTo('/schedules/' + (route.scheduleSubTab || 'schedules'));
     } else if (tab === 'admin') {
       if (user?.role === 'admin') {
         goTo('/admin/' + (route.adminSubTab || 'system'));
@@ -143,12 +142,7 @@ export const App: React.FC = () => {
   };
 
   const handleApplyPreset = async (preset: string) => {
-    try {
-      setLoadingPreset(true);
-      await applyPreset(preset);
-    } finally {
-      setLoadingPreset(false);
-    }
+    await applyPreset(preset);
   };
 
   const handleResetFilter = async (groupId: number) => {
@@ -173,7 +167,7 @@ export const App: React.FC = () => {
   const alarmCount = groups.filter((g) => g.error_active).length;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-500 selection:text-white">
+    <div className="app min-h-screen flex flex-col selection:bg-blue-500 selection:text-white">
       {/* Header Bar */}
       <Header
         systemInfo={systemInfo}
@@ -182,15 +176,13 @@ export const App: React.FC = () => {
         setActiveTab={handleTabChange}
         tempUnit={tempUnit}
         setTempUnit={setTempUnit}
-        onApplyPreset={handleApplyPreset}
         runningCount={runningCount}
         dirtyFilterCount={dirtyFilterCount}
         alarmCount={alarmCount}
-        loadingPreset={loadingPreset}
       />
 
       {/* Main View Area */}
-      <main className="flex-1 pb-16">
+      <main className={route.tab === 'schedules' ? 'flex-1' : 'flex-1 pb-16 max-w-7xl mx-auto px-4 w-full'}>
         {route.tab === 'dashboard' && (
           <Dashboard
             groups={groups}
@@ -199,6 +191,7 @@ export const App: React.FC = () => {
             onOpenDetails={handleOpenZoneModal}
             onResetFilter={handleResetFilter}
             onBatchControl={handleBatchControl}
+            onApplyPreset={handleApplyPreset}
             initialFilter={route.dashboardFilter}
             onFilterChange={(f) => goTo(f === 'all' ? '/dashboard' : `/dashboard?floor=${f}`)}
           />

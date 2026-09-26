@@ -11,7 +11,9 @@ const rootDir = path.resolve(__dirname, '..');
 const PORT = 8089;
 
 async function runVerification() {
-  console.log(`🚀 Starting server on port ${PORT} targeting 192.0.2.90...`);
+  const CONTROLLER_HOST = process.env.GB50_HOST || '192.0.2.90';
+  const CONTROLLER_PORT = process.env.GB50_PORT || '80';
+  console.log(`🚀 Starting server on port ${PORT} targeting ${CONTROLLER_HOST}:${CONTROLLER_PORT}...`);
   
   const pythonBin = fs.existsSync(path.join(rootDir, '.venv/bin/python'))
     ? path.join(rootDir, '.venv/bin/python')
@@ -19,7 +21,12 @@ async function runVerification() {
 
   const serverProcess = spawn(
     pythonBin,
-    [path.join(rootDir, 'run_server.py'), '--port', String(PORT), '--controller-host', '192.0.2.90'],
+    [
+      path.join(rootDir, 'run_server.py'),
+      '--port', String(PORT),
+      '--controller-host', CONTROLLER_HOST,
+      '--controller-port', String(CONTROLLER_PORT),
+    ],
     { cwd: rootDir, stdio: ['ignore', 'pipe', 'pipe'] }
   );
 
@@ -112,8 +119,8 @@ async function runVerification() {
     }
 
     // Ventilation Tab
-    console.log('\n--- 4. Navigating to Dedicated Fresh Air Ventilation (LOSSNAY) Tab ---');
-    const ventNav = page.locator('button:has-text("Fresh Air Ventilation")');
+    console.log('\n--- 4. Navigating to Dedicated Fresh Air Ventilation Tab ---');
+    const ventNav = page.locator('button:has-text("Fresh Air")');
     if (await ventNav.count() > 0) {
       await ventNav.first().click();
       await page.waitForTimeout(1000);
@@ -127,60 +134,65 @@ async function runVerification() {
     if (await schedNav.count() > 0) {
       await schedNav.first().click();
       await page.waitForTimeout(1000);
-      console.log('✓ Opened Schedules Hub (Activity Programs Mode)');
-      await page.screenshot({ path: path.join(__dirname, 'schedules_programs.png') });
+      console.log('✓ Opened Schedules (Staff Schedule Overview)');
+      await page.screenshot({ path: path.join(__dirname, 'schedules_overview.png') });
 
-      // 5.1 Test Activity Program Edit Modal
-      const editProgBtn = page.locator('button:has-text("Edit Routine & Rooms")').first();
-      if (await editProgBtn.count() > 0) {
-        await editProgBtn.click();
-        await page.waitForTimeout(400);
-        console.log('✓ Opened Activity Program Edit Modal');
-        const cancelBtn = page.locator('button:has-text("Cancel")').first();
-        if (await cancelBtn.count() > 0) await cancelBtn.click();
+      // 5.1 Test Unified Schedules Roster
+      console.log('✓ On Unified Schedules Roster');
+      await page.screenshot({ path: path.join(__dirname, 'schedules_overview.png') });
+
+      // 5.2 Test Facilities Detail Toggle
+      const facToggle = page.locator('button:has-text("Facilities Detail")');
+      if (await facToggle.count() > 0) {
+        await facToggle.click();
+        await page.waitForTimeout(500);
+        console.log('✓ Toggled Facilities Detail ON');
+        await page.screenshot({ path: path.join(__dirname, 'schedules_facilities_on.png') });
+        await facToggle.click();
         await page.waitForTimeout(300);
       }
 
-      // 5.2 Switch to Weekly Visual Hub
-      const plannerBtn = page.locator('button:has-text("Weekly Visual Hub")');
-      if (await plannerBtn.count() > 0) {
-        await plannerBtn.click();
+      // 5.3 Test 24h Day Planner Sub-Tab
+      const plannerTab = page.locator('button:has-text("24h Day Planner")');
+      if (await plannerTab.count() > 0) {
+        await plannerTab.click();
         await page.waitForTimeout(800);
-        console.log('✓ Switched to Weekly Visual Hub');
+        console.log('✓ Switched to 24h Day Planner');
         await page.screenshot({ path: path.join(__dirname, 'schedules_planner.png') });
-
-        // Open Add Event modal
-        const addEvBtn = page.locator('button:has-text("Add Scheduled Event")').first();
-        if (await addEvBtn.count() > 0) {
-          await addEvBtn.click();
-          await page.waitForTimeout(400);
-          console.log('✓ Opened Add Scheduled Event Modal');
-          const cancelBtn = page.locator('button:has-text("Cancel")').first();
-          if (await cancelBtn.count() > 0) await cancelBtn.click();
-          await page.waitForTimeout(300);
-          console.log('✓ Closed Add Scheduled Event Modal');
-        }
-
-        // Open Duplicate Modal
-        const dupBtn = page.locator('button:has-text("Duplicate Day to...")').first();
-        if (await dupBtn.count() > 0) {
-          await dupBtn.click();
-          await page.waitForTimeout(400);
-          console.log('✓ Opened Duplicate Day Modal');
-          const cancelBtn = page.locator('button:has-text("Cancel")').first();
-          if (await cancelBtn.count() > 0) await cancelBtn.click();
-          await page.waitForTimeout(300);
-          console.log('✓ Closed Duplicate Day Modal');
-        }
       }
 
-      // 5.3 Switch to Master Matrix Grid
-      const matrixBtn = page.locator('button:has-text("Master Matrix Grid")');
-      if (await matrixBtn.count() > 0) {
-        await matrixBtn.click();
+      // 5.4 Test Room Matrix Sub-Tab
+      const matrixTab = page.locator('button:has-text("Room Matrix")');
+      if (await matrixTab.count() > 0) {
+        await matrixTab.click();
         await page.waitForTimeout(800);
-        console.log('✓ Switched to Master Matrix Grid');
+        console.log('✓ Switched to Room Matrix');
         await page.screenshot({ path: path.join(__dirname, 'schedules_matrix.png') });
+      }
+
+      // 5.5 Test Create Schedule Screen with Live Timeline Preview
+      const newSchedBtn = page.locator('button:has-text("New Schedule")').first();
+      if (await newSchedBtn.count() > 0) {
+        await newSchedBtn.click();
+        await page.waitForTimeout(800);
+        console.log('✓ Switched to Create Schedule Screen');
+        await page.screenshot({ path: path.join(__dirname, 'schedules_create.png') });
+
+        // Open Facilities Drawer in Editor
+        const facDrawer = page.locator('summary:has-text("Facilities & Controller Registers")');
+        if (await facDrawer.count() > 0) {
+          await facDrawer.click();
+          await page.waitForTimeout(400);
+          console.log('✓ Opened Facilities Parameters Drawer');
+          await page.screenshot({ path: path.join(__dirname, 'schedules_create_facilities_drawer.png') });
+        }
+
+        // Return to overview
+        const backBtn = page.locator('button:has-text("Back to schedules")');
+        if (await backBtn.count() > 0) {
+          await backBtn.click();
+          await page.waitForTimeout(500);
+        }
       }
     }
 

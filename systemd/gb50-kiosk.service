@@ -1,0 +1,31 @@
+[Unit]
+Description=Mitsubishi GB-50 Kiosk Display UI
+Documentation=https://github.com/church-ac/gb50-web-proxy
+After=network-online.target gb50-proxy.service
+Wants=network-online.target gb50-proxy.service
+Conflicts=getty@tty7.service
+
+[Service]
+Type=simple
+User=kiosk
+Group=kiosk
+PAMName=login
+Environment=DISPLAY=:0
+EnvironmentFile=-/etc/default/gb50-proxy
+StandardInput=tty
+TTYPath=/dev/tty7
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gb50-kiosk
+
+# Start X11 on VT7 running our resilient kiosk session script
+ExecStart=/usr/bin/xinit /opt/gb50-proxy/scripts/kiosk-session.sh -- /usr/bin/X :0 vt7 -keeptty -nocursor -s 0 -dpms -noreset -v
+
+# Auto-recovery resilience
+Restart=always
+RestartSec=3s
+TimeoutStopSec=10
+KillMode=mixed
+
+[Install]
+WantedBy=graphical.target

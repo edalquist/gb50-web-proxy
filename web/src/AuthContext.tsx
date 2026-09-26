@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { UserProfile, UserRole } from './types';
-import { loginUser, fetchCurrentUser, logoutUser, changeOwnPassword, getAuthToken } from './api';
+import { loginUser, fetchCurrentUser, logoutUser, changeOwnPassword, getAuthToken, setAuthToken, fetchKioskSession } from './api';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -19,11 +19,35 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [isLoading, setIsLoading] = useState(true);
 
   const loadUser = useCallback(async () => {
+    // 1. Check for URL token (?token=... or ?kiosk_token=...)
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const queryToken = urlParams.get('token') || urlParams.get('kiosk_token');
+      if (queryToken) {
+        setAuthToken(queryToken);
+        urlParams.delete('token');
+        urlParams.delete('kiosk_token');
+        const newQuery = urlParams.toString() ? `?${urlParams.toString()}` : '';
+        window.history.replaceState({}, '', `${window.location.pathname}${newQuery}`);
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+
     const token = getAuthToken();
     if (!token) {
-      setUser(null);
-      setIsLoading(false);
-      return;
+      // 2. Check if host system provides kiosk auto-login session (localhost only)
+      try {
+        const kioskRes = await fetchKioskSession();
+        setUser(kioskRes.user);
+        setIsLoading(false);
+        return;
+      } catch {
+        // Not a kiosk or auto-login not enabled
+        setUser(null);
+        setIsLoading(false);
+        return;
+      }
     }
     try {
       const profile = await fetchCurrentUser();

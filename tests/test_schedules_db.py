@@ -154,15 +154,17 @@ async def test_self_healing_reconstruction():
 
     # Trigger reconstruction
     progs = await reconstruct_schedules_from_controller(mock_client, force=True)
-    assert len(progs) == 2  # 1 active schedule + 1 standby schedule
+    # Zones 1 & 2 share a schedule; Zone 3 is empty and must NOT have a "Standby / Unscheduled" schedule created
+    assert len(progs) == 1
 
     active_prog = next(p for p in progs if set(p["assigned_group_ids"]) == {1, 2})
     assert active_prog is not None
     assert "Weekday" in active_prog["name"] or "Schedule" in active_prog["name"]
 
-    standby_prog = next(p for p in progs if set(p["assigned_group_ids"]) == {3})
-    assert standby_prog is not None
-    assert "Standby" in standby_prog["name"] or "Unscheduled" in standby_prog["name"]
+    # Verify no program was created for Zone 3 (unscheduled zones are omitted from schedules)
+    assert not any(3 in p["assigned_group_ids"] for p in progs)
+    assert schedule_db.get_program_ids_for_group(3) == []
+    assert schedule_db.get_pending_group_syncs() == []
 
 
 @pytest.mark.asyncio
@@ -294,6 +296,34 @@ async def test_rest_api_programs_endpoints():
         all_assign = await client.get("/api/v1/schedules/assignments", headers=headers)
         assert all_assign.status_code == 200
         assert 1 in all_assign.json() or "1" in all_assign.json()
+
+        # Atomically update created program with assigned_group_ids and metadata_json
+        update_resp = await client.put(
+            f"/api/v1/schedules/programs/{created['id']}",
+            headers=headers,
+            json={
+                "name": "Coherent Sunday Routine",
+                "color": "purple",
+                "assigned_group_ids": [1],
+                "weekly_pattern": {
+                    "7": [
+                        {"hour": 7, "minute": 30, "drive": "ON", "set_temp_f": 70.0, "mode": "AUTO"},
+                        {"hour": 13, "minute": 0, "drive": "OFF"},
+                        {"hour": 17, "minute": 30, "drive": "ON", "set_temp_f": 70.0, "mode": "AUTO"},
+                        {"hour": 20, "minute": 30, "drive": "OFF"},
+                    ]
+                },
+                "metadata_json": {"recurrence_kind": "weekly", "days": [7]},
+                "publish_to_hardware": False,
+            },
+        )
+        assert update_resp.status_code == 200
+        updated = update_resp.json()
+        assert updated["name"] == "Coherent Sunday Routine"
+        assert updated["color"] == "purple"
+        assert set(updated["assigned_group_ids"]) == {1}
+        assert len(updated["weekly_pattern"]["7"]) == 4
+        assert updated["metadata_json"]["days"] == [7]
 
         # Clean up
         await client.delete(f"/api/v1/schedules/programs/{sun_id}", headers=headers)
@@ -636,6 +666,131 @@ def test_seasonal_schedules_db_and_cloning(temp_db):
     )
     assert dup["name"] == "Summer Sanctuary Cooling (Spring)"
     assert dup["season_id"] == 3
+
+
+@pytest.mark.asyncio
+async def test_reconstruct_schedules_groups_exact_same_times_only(tmp_path):
+    """Verify that schedule reconstruction clusters days with exact matching times into separate routines."""
+    import server.schedule_sync as sync_module
+    from server.schedule_sync import reconstruct_schedules_from_controller, merge_programs_for_group
+
+    db_file = str(tmp_path / "test_reconstruct_clustering.db")
+    temp_db = ScheduleDatabase(db_path=db_file)
+    old_db = sync_module.schedule_db
+    sync_module.schedule_db = temp_db
+
+    try:
+        mock_client = AsyncMock()
+        mock_groups = [
+            GroupStatus(
+                group_id=1, name="Sanctuary", model=ModelType.IC, address=1,
+                slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+                air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+                schedule_enabled=True, filter_dirty=False, error_active=False,
+                capabilities=GroupCapabilities(),
+            ),
+            GroupStatus(
+                group_id=2, name="Fellowship Hall", model=ModelType.IC, address=2,
+                slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+                air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+                schedule_enabled=True, filter_dirty=False, error_active=False,
+                capabilities=GroupCapabilities(),
+            ),
+            GroupStatus(
+                group_id=3, name="Classroom A", model=ModelType.IC, address=3,
+                slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+                air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+                schedule_enabled=True, filter_dirty=False, error_active=False,
+                capabilities=GroupCapabilities(),
+            ),
+            GroupStatus(
+                group_id=4, name="Unused Storage", model=ModelType.IC, address=4,
+                slave_addresses=[], drive=DriveState.OFF, mode=OperationMode.HEAT,
+                air_direction=AirDirection.HORIZONTAL, fan_speed=FanSpeed.AUTO,
+                schedule_enabled=True, filter_dirty=False, error_active=False,
+                capabilities=GroupCapabilities(),
+            ),
+        ]
+        mock_client.get_all_groups = AsyncMock(return_value=mock_groups)
+
+        # Groups 1 & 2 have Mon-Fri 08:00-17:00 AND Sunday 06:30-17:00
+        # Group 3 has only Sunday 06:30-17:00
+        # Group 4 has no scheduled events
+        weekday_events = [
+            ScheduleItem(index=1, hour=8, minute=0, drive=DriveState.ON, mode=OperationMode.AUTO, set_temp_c=23.5, time_str="08:00"),
+            ScheduleItem(index=2, hour=17, minute=0, drive=DriveState.OFF, mode=OperationMode.AUTO, set_temp_c=23.5, time_str="17:00"),
+        ]
+        sunday_events = [
+            ScheduleItem(index=1, hour=6, minute=30, drive=DriveState.ON, mode=OperationMode.AUTO, set_temp_c=23.5, time_str="06:30"),
+            ScheduleItem(index=2, hour=17, minute=0, drive=DriveState.OFF, mode=OperationMode.AUTO, set_temp_c=21.0, time_str="17:00"),
+        ]
+
+        full_sched = {
+            1: weekday_events,
+            2: weekday_events,
+            3: weekday_events,
+            4: weekday_events,
+            5: weekday_events,
+            6: [],
+            7: sunday_events,
+        }
+        sunday_only_sched = {
+            1: [], 2: [], 3: [], 4: [], 5: [], 6: [],
+            7: sunday_events,
+        }
+        empty_sched = {d: [] for d in range(1, 8)}
+
+        async def _mock_get_weekly(gid, season=1):
+            if gid in (1, 2):
+                return full_sched
+            elif gid == 3:
+                return sunday_only_sched
+            else:
+                return empty_sched
+
+        mock_client.get_weekly_schedule = AsyncMock(side_effect=_mock_get_weekly)
+
+        progs = await reconstruct_schedules_from_controller(mock_client, force=True)
+
+        # Exactly 2 programs should be created: Weekday Routine and Sunday Routine
+        assert len(progs) == 2
+
+        weekday_prog = next(p for p in progs if p["metadata_json"]["days"] == [1, 2, 3, 4, 5])
+        sunday_prog = next(p for p in progs if p["metadata_json"]["days"] == [7])
+
+        # Verify Weekday Routine
+        assert "Weekday Routine" in weekday_prog["name"]
+        assert "08:00 - 17:00" in weekday_prog["name"]
+        assert set(weekday_prog["assigned_group_ids"]) == {1, 2}
+        # Verify that all active days have the exact same times
+        for d in [1, 2, 3, 4, 5]:
+            evs = weekday_prog["weekly_pattern"][d]
+            assert [(e["hour"], e["minute"], e["drive"]) for e in evs] == [(8, 0, "ON"), (17, 0, "OFF")]
+        assert weekday_prog["weekly_pattern"][6] == []
+        assert weekday_prog["weekly_pattern"][7] == []
+
+        # Verify Sunday Routine
+        assert "Sunday Routine" in sunday_prog["name"]
+        assert "06:30 - 17:00" in sunday_prog["name"]
+        assert set(sunday_prog["assigned_group_ids"]) == {1, 2, 3}
+        for d in range(1, 7):
+            assert sunday_prog["weekly_pattern"][d] == []
+        sun_evs = sunday_prog["weekly_pattern"][7]
+        assert [(e["hour"], e["minute"], e["drive"]) for e in sun_evs] == [(6, 30, "ON"), (17, 0, "OFF")]
+
+        # Verify Group 4 is unassigned
+        assert not any(4 in p["assigned_group_ids"] for p in progs)
+
+        # Verify round-trip merging for Group 1: Weekday + Sunday
+        merged_pat, _ = merge_programs_for_group([weekday_prog["id"], sunday_prog["id"]])
+        for d in [1, 2, 3, 4, 5]:
+            assert [(e["hour"], e["minute"], e["drive"]) for e in merged_pat[d]] == [(8, 0, "ON"), (17, 0, "OFF")]
+        assert merged_pat[6] == []
+        assert [(e["hour"], e["minute"], e["drive"]) for e in merged_pat[7]] == [(6, 30, "ON"), (17, 0, "OFF")]
+
+    finally:
+        sync_module.schedule_db = old_db
+
 
 
 

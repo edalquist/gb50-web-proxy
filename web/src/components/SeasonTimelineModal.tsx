@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Calendar, 
@@ -45,8 +45,7 @@ export const SeasonTimelineModal: React.FC<SeasonTimelineModalProps> = ({
   seasons,
   onSaveSeasons,
 }) => {
-  const [editedSeasons, setEditedSeasons] = useState<SeasonConfig[]>(() => {
-    // Ensure all 5 seasons are initialized
+  const getInitialSeasons = () => {
     const list = [...seasons];
     for (let i = 1; i <= 5; i++) {
       if (!list.some(s => s.season_id === i)) {
@@ -64,10 +63,18 @@ export const SeasonTimelineModal: React.FC<SeasonTimelineModalProps> = ({
       }
     }
     return list.sort((a, b) => a.season_id - b.season_id);
-  });
+  };
 
+  const [editedSeasons, setEditedSeasons] = useState<SeasonConfig[]>(getInitialSeasons);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen && seasons && seasons.length > 0) {
+      setEditedSeasons(getInitialSeasons());
+      setError(null);
+    }
+  }, [isOpen, seasons]);
 
   if (!isOpen) return null;
 

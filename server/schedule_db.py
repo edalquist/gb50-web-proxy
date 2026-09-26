@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import json
 import sqlite3
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
@@ -39,8 +39,9 @@ class ScheduleProgramModel(BaseModel):
         default_factory=lambda: {d: [] for d in range(1, 8)}
     )
     assigned_group_ids: List[int] = Field(default_factory=list)
-    sync_status: str = Field("SYNCED", pattern="^(SYNCED|DRIFT_DETECTED|PENDING)$")
+    sync_status: str = Field("SYNCED", pattern="^(SYNCED|DRIFT_DETECTED|PENDING|ERROR)$")
     weekly_hours: float = 0.0
+    metadata_json: Optional[Dict[str, Any]] = Field(default_factory=dict)
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -50,6 +51,9 @@ class ScheduleDatabase:
 
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        db_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -126,6 +130,19 @@ class ScheduleDatabase:
                 cursor.execute("ALTER TABLE schedules ADD COLUMN season_id INTEGER DEFAULT 1")
             if "season_scope" not in sched_cols:
                 cursor.execute("ALTER TABLE schedules ADD COLUMN season_scope TEXT DEFAULT '[\"1\"]'")
+            if "metadata_json" not in sched_cols:
+                cursor.execute("ALTER TABLE schedules ADD COLUMN metadata_json TEXT DEFAULT '{}'")
+
+            # Create zone_metadata table for human room names and area groupings
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS zone_metadata (
+                    group_id INTEGER PRIMARY KEY,
+                    room_name TEXT NOT NULL,
+                    area_name TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
 
             # 3. Create schedule_assignments table with composite key
             cursor.execute("PRAGMA table_info(schedule_assignments)")
@@ -164,6 +181,90 @@ class ScheduleDatabase:
                     )
                     """
                 )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_group_syncs (
+                    group_id INTEGER PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            conn.commit()
+
+    def seed_mock_defaults_if_empty(self) -> None:
+        """Seed default 3 staff schedules from UX mock if schedules table is completely empty."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Seed default 3 staff schedules matching mock if schedules is empty
+            cursor.execute("SELECT COUNT(*) FROM schedules")
+            if cursor.fetchone()[0] == 0:
+                now_str = datetime.now(timezone.utc).isoformat()
+                # 1. Sunday Worship (Published)
+                p1_pattern = compile_staff_schedule_pattern([7], "07:30", "13:00", 70.0, "AUTO", True)
+                p1_meta = {
+                    "occupied_start": "07:30",
+                    "occupied_end": "13:00",
+                    "temperature_f": 70.0,
+                    "mode": "AUTO",
+                    "thermostat_adjustments_allowed": True,
+                    "recurrence_kind": "weekly",
+                    "days": [7],
+                    "start_date": "Apr 1",
+                    "end_date": "Sep 30",
+                    "status": "published",
+                }
+                cursor.execute(
+                    "INSERT INTO schedules (id, name, description, color, season_id, season_scope, pattern_json, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (1, "Sunday Worship", "Occupied 07:30 - 13:00 at 70°F", "blue", 1, '["1"]', json.dumps(p1_pattern), json.dumps(p1_meta), now_str, now_str)
+                )
+                cursor.execute("INSERT INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status) VALUES (1, 1, ?, 'SYNCED')", (now_str,))
+                cursor.execute("INSERT INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status) VALUES (2, 1, ?, 'SYNCED')", (now_str,))
+
+                # 2. Weekday Office Hours (Published)
+                p2_pattern = compile_staff_schedule_pattern([1, 2, 3, 4, 5], "08:00", "17:00", 72.0, "AUTO", True)
+                p2_meta = {
+                    "occupied_start": "08:00",
+                    "occupied_end": "17:00",
+                    "temperature_f": 72.0,
+                    "mode": "AUTO",
+                    "thermostat_adjustments_allowed": True,
+                    "recurrence_kind": "weekly",
+                    "days": [1, 2, 3, 4, 5],
+                    "start_date": "Jan 1",
+                    "end_date": "Dec 31",
+                    "status": "published",
+                }
+                cursor.execute(
+                    "INSERT INTO schedules (id, name, description, color, season_id, season_scope, pattern_json, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (2, "Weekday Office Hours", "Occupied 08:00 - 17:00 at 72°F", "emerald", 1, '["1"]', json.dumps(p2_pattern), json.dumps(p2_meta), now_str, now_str)
+                )
+                cursor.execute("INSERT INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status) VALUES (5, 2, ?, 'SYNCED')", (now_str,))
+
+                # 3. Choir Rehearsal (Draft)
+                p3_pattern = compile_staff_schedule_pattern([4], "18:00", "21:00", 70.0, "AUTO", True)
+                p3_meta = {
+                    "occupied_start": "18:00",
+                    "occupied_end": "21:00",
+                    "temperature_f": 70.0,
+                    "mode": "AUTO",
+                    "thermostat_adjustments_allowed": True,
+                    "recurrence_kind": "weekly",
+                    "days": [4],
+                    "start_date": "Sep 15",
+                    "end_date": "Dec 20",
+                    "status": "draft",
+                }
+                cursor.execute(
+                    "INSERT INTO schedules (id, name, description, color, season_id, season_scope, pattern_json, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (3, "Choir Rehearsal", "Occupied 18:00 - 21:00 at 70°F", "amber", 1, '["1"]', json.dumps(p3_pattern), json.dumps(p3_meta), now_str, now_str)
+                )
+                cursor.execute("INSERT INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status) VALUES (1, 3, ?, 'PENDING')", (now_str,))
+                cursor.execute("INSERT INTO schedule_assignments (group_id, schedule_id, synced_at, sync_status) VALUES (22, 3, ?, 'PENDING')", (now_str,))
+
             conn.commit()
 
     # --- Season Management ---
@@ -326,7 +427,7 @@ class ScheduleDatabase:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT id, name, description, color, season_id, season_scope, pattern_json, created_at, updated_at
+                SELECT id, name, description, color, season_id, season_scope, pattern_json, metadata_json, created_at, updated_at
                 FROM schedules
                 ORDER BY id ASC
                 """
@@ -368,6 +469,12 @@ class ScheduleDatabase:
 
                 pattern = json.loads(row["pattern_json"])
                 int_pattern = {int(k): v for k, v in pattern.items()}
+                
+                try:
+                    meta = json.loads(row["metadata_json"] or "{}")
+                except Exception:
+                    meta = {}
+
                 results.append({
                     "id": sid,
                     "name": row["name"],
@@ -376,6 +483,7 @@ class ScheduleDatabase:
                     "season_id": row_season_id,
                     "season_scope": scope_list,
                     "weekly_pattern": int_pattern,
+                    "metadata_json": meta,
                     "assigned_group_ids": sorted(assignments_map.get(sid, [])),
                     "sync_status": status_map.get(sid, "SYNCED"),
                     "created_at": row["created_at"],
@@ -389,7 +497,7 @@ class ScheduleDatabase:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT id, name, description, color, season_id, season_scope, pattern_json, created_at, updated_at
+                SELECT id, name, description, color, season_id, season_scope, pattern_json, metadata_json, created_at, updated_at
                 FROM schedules WHERE id = ?
                 """,
                 (schedule_id,),
@@ -419,6 +527,11 @@ class ScheduleDatabase:
             except Exception:
                 scope_list = [str(row_season_id)]
 
+            try:
+                meta = json.loads(row["metadata_json"] or "{}")
+            except Exception:
+                meta = {}
+
             return {
                 "id": row["id"],
                 "name": row["name"],
@@ -427,6 +540,7 @@ class ScheduleDatabase:
                 "season_id": row_season_id,
                 "season_scope": scope_list,
                 "weekly_pattern": int_pattern,
+                "metadata_json": meta,
                 "assigned_group_ids": sorted(assigned_groups),
                 "sync_status": sync_status,
                 "created_at": row["created_at"],
@@ -470,6 +584,7 @@ class ScheduleDatabase:
         assigned_group_ids: Optional[List[int]] = None,
         season_id: int = 1,
         season_scope: Optional[List[str]] = None,
+        metadata_json: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create a new named schedule program and optional initial assignments."""
         pattern_json = self._serialize_pattern(weekly_pattern)
@@ -477,15 +592,16 @@ class ScheduleDatabase:
         if season_scope is None:
             season_scope = [str(season_id)]
         scope_json = json.dumps(season_scope)
+        meta_json_str = json.dumps(metadata_json or {})
 
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO schedules (name, description, color, season_id, season_scope, pattern_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO schedules (name, description, color, season_id, season_scope, pattern_json, metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name.strip(), description.strip(), color.strip(), season_id, scope_json, pattern_json, now_str, now_str),
+                (name.strip(), description.strip(), color.strip(), season_id, scope_json, pattern_json, meta_json_str, now_str, now_str),
             )
             schedule_id = cursor.lastrowid
 
@@ -511,6 +627,7 @@ class ScheduleDatabase:
         weekly_pattern: Optional[Dict[Any, Any]] = None,
         season_id: Optional[int] = None,
         season_scope: Optional[List[str]] = None,
+        metadata_json: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Update an existing schedule program."""
         existing = self.get_schedule(schedule_id)
@@ -539,6 +656,9 @@ class ScheduleDatabase:
         if weekly_pattern is not None:
             updates.append("pattern_json = ?")
             params.append(self._serialize_pattern(weekly_pattern))
+        if metadata_json is not None:
+            updates.append("metadata_json = ?")
+            params.append(json.dumps(metadata_json))
 
         updates.append("updated_at = ?")
         params.append(now_str)
@@ -556,19 +676,34 @@ class ScheduleDatabase:
         return self.get_schedule(schedule_id)
 
     def delete_schedule(self, schedule_id: int) -> bool:
-        """Delete a schedule program and cascade delete its assignments."""
+        """Delete a schedule program and cascade delete its assignments, marking zones for pending hardware sync."""
+        now_str = datetime.now(timezone.utc).isoformat()
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            cursor.execute("SELECT group_id FROM schedule_assignments WHERE schedule_id = ?", (schedule_id,))
+            gids = [r[0] for r in cursor.fetchall()]
+            for gid in gids:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO pending_group_syncs (group_id, reason, created_at) VALUES (?, 'SCHEDULE_DELETED', ?)",
+                    (gid, now_str),
+                )
             cursor.execute("DELETE FROM schedule_assignments WHERE schedule_id = ?", (schedule_id,))
             cursor.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
             conn.commit()
             return cursor.rowcount > 0
 
-    def assign_zones(self, schedule_id: int, group_ids: List[int]) -> bool:
-        """Assign a list of zone IDs to a schedule program, replacing previous assignments for this program."""
+    def assign_zones(self, schedule_id: int, group_ids: List[int]) -> List[int]:
+        """Assign a list of zone IDs to a schedule program, replacing previous assignments for this program.
+        Any removed zones are tracked in pending_group_syncs so hardware can be cleared/updated.
+        Returns the list of removed group IDs."""
         now_str = datetime.now(timezone.utc).isoformat()
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            cursor.execute("SELECT group_id FROM schedule_assignments WHERE schedule_id = ?", (schedule_id,))
+            old_gids = {r[0] for r in cursor.fetchall()}
+            new_gids = set(group_ids)
+            removed_gids = sorted(list(old_gids - new_gids))
+
             cursor.execute("DELETE FROM schedule_assignments WHERE schedule_id = ?", (schedule_id,))
             for gid in group_ids:
                 cursor.execute(
@@ -578,8 +713,53 @@ class ScheduleDatabase:
                     """,
                     (gid, schedule_id, now_str),
                 )
+            for gid in removed_gids:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO pending_group_syncs (group_id, reason, created_at)
+                    VALUES (?, 'UNASSIGNED', ?)
+                    """,
+                    (gid, now_str),
+                )
             conn.commit()
-            return True
+            return removed_gids
+
+    def assign_groups_to_schedule(self, schedule_id: int, group_ids: List[int]) -> List[int]:
+        """Assign a list of zone/group IDs to a schedule program (alias for assign_zones)."""
+        return self.assign_zones(schedule_id, group_ids)
+
+    def get_pending_group_syncs(self) -> List[int]:
+        """Get all group IDs pending hardware synchronization (e.g. unassigned or deleted)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT group_id FROM pending_group_syncs")
+            return [r[0] for r in cursor.fetchall()]
+
+    def clear_pending_group_sync(self, group_id: int) -> None:
+        """Clear a group from pending hardware synchronization."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM pending_group_syncs WHERE group_id = ?", (group_id,))
+            conn.commit()
+
+    def clear_all_pending_group_syncs(self) -> None:
+        """Clear all pending hardware synchronization entries."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM pending_group_syncs")
+            conn.commit()
+
+    def add_pending_group_sync(self, group_id: int, reason: str = "UNASSIGNED") -> None:
+        """Add a group to pending hardware synchronization."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO pending_group_syncs (group_id, reason, created_at) VALUES (?, ?, ?)",
+                (group_id, reason, now_str),
+            )
+            conn.commit()
+
 
     def get_programs_for_group(self, group_id: int, season_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all schedule programs assigned to a specific HVAC zone, optionally filtered by season."""
@@ -810,6 +990,139 @@ class ScheduleDatabase:
                 created_progs.append(cloned)
 
         return created_progs
+
+    # --- Zone Metadata & Space Names ---
+
+    def get_all_zone_metadata(self) -> Dict[int, Dict[str, str]]:
+        """Retrieve all room name and area name mappings for zones."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT group_id, room_name, area_name FROM zone_metadata")
+            rows = cursor.fetchall()
+            return {
+                int(r["group_id"]): {
+                    "room_name": str(r["room_name"] or ""),
+                    "area_name": str(r["area_name"] or ""),
+                }
+                for r in rows
+            }
+
+    def upsert_zone_metadata(self, group_id: int, room_name: str, area_name: str = "") -> Dict[str, Any]:
+        """Save friendly room name and area grouping for a zone."""
+        r_name = str(room_name).strip()
+        a_name = str(area_name).strip()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO zone_metadata (group_id, room_name, area_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    room_name = excluded.room_name,
+                    area_name = excluded.area_name
+                """,
+                (group_id, r_name, a_name),
+            )
+            conn.commit()
+        return {"group_id": group_id, "room_name": r_name, "area_name": a_name}
+
+    # --- Season Hardware Reconciliation ---
+
+    def compare_seasons(self, hw_seasons: List[Any]) -> Dict[str, Any]:
+        """Compare controller hardware seasons with DB seasons."""
+        db_seasons = self.list_seasons()
+        db_by_id = {s["season_id"]: s for s in db_seasons}
+        mismatches = []
+        for hw in hw_seasons:
+            sid = getattr(hw, "season", None) if hasattr(hw, "season") else (hw.get("season") if isinstance(hw, dict) else None)
+            if not sid or sid not in db_by_id:
+                continue
+            db_s = db_by_id[sid]
+            hw_sm = getattr(hw, "start_month", 0) if hasattr(hw, "start_month") else (hw.get("start_month", 0) if isinstance(hw, dict) else 0)
+            hw_sd = getattr(hw, "start_day", 0) if hasattr(hw, "start_day") else (hw.get("start_day", 0) if isinstance(hw, dict) else 0)
+            hw_em = getattr(hw, "end_month", 0) if hasattr(hw, "end_month") else (hw.get("end_month", 0) if isinstance(hw, dict) else 0)
+            hw_ed = getattr(hw, "end_day", 0) if hasattr(hw, "end_day") else (hw.get("end_day", 0) if isinstance(hw, dict) else 0)
+
+            # Check if active dates match
+            if db_s["enabled"]:
+                if (db_s["start_month"] != hw_sm or db_s["start_day"] != hw_sd or
+                    db_s["end_month"] != hw_em or db_s["end_day"] != hw_ed):
+                    mismatches.append({
+                        "season_id": sid,
+                        "name": db_s["name"],
+                        "db": {"start_month": db_s["start_month"], "start_day": db_s["start_day"], "end_month": db_s["end_month"], "end_day": db_s["end_day"]},
+                        "controller": {"start_month": hw_sm, "start_day": hw_sd, "end_month": hw_em, "end_day": hw_ed},
+                    })
+        return {
+            "reconciled": len(mismatches) == 0,
+            "mismatches": mismatches,
+            "db_seasons": db_seasons,
+        }
+
+
+def parse_time_str(t_str: str) -> Tuple[int, int]:
+    """Parse time string supporting '07:30', '7:30 AM', '1:00 PM', '13:00'."""
+    t_str = str(t_str).strip()
+    upper = t_str.upper()
+    is_pm = "PM" in upper
+    is_am = "AM" in upper
+    clean = upper.replace("AM", "").replace("PM", "").strip()
+    parts = clean.split(":")
+    h = int(parts[0])
+    m = int(parts[1]) if len(parts) > 1 else 0
+    if is_pm and h < 12:
+        h += 12
+    elif is_am and h == 12:
+        h = 0
+    return h, m
+
+
+def compile_staff_schedule_pattern(
+    days: List[int],
+    occupied_start: str,
+    occupied_end: str,
+    temperature_f: float,
+    mode: str = "AUTO",
+    thermostat_adjustments_allowed: bool = True,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Compile an occupied interval and temperature into a deterministic 7-day pattern with paired ON/OFF events."""
+    start_h, start_m = parse_time_str(occupied_start)
+    end_h, end_m = parse_time_str(occupied_end)
+    temp_c = round(((float(temperature_f) - 32.0) * 5.0 / 9.0) * 2.0) / 2.0
+    remote_lock = "PERMIT" if thermostat_adjustments_allowed else "PROHIBIT"
+    norm_mode = mode.upper()
+    if norm_mode not in ("AUTO", "COOL", "HEAT", "FAN"):
+        norm_mode = "AUTO"
+
+    pattern: Dict[int, List[Dict[str, Any]]] = {d: [] for d in range(1, 8)}
+    for day in days:
+        if not (1 <= day <= 7):
+            continue
+        pattern[day] = [
+            {
+                "hour": start_h,
+                "minute": start_m,
+                "drive": "ON",
+                "mode": norm_mode,
+                "set_temp_c": temp_c,
+                "set_temp_f": round(float(temperature_f), 1),
+                "fan_speed": "AUTO",
+                "air_direction": "HORIZONTAL",
+                "remote_lock": remote_lock,
+            },
+            {
+                "hour": end_h,
+                "minute": end_m,
+                "drive": "OFF",
+                "mode": norm_mode,
+                "set_temp_c": temp_c,
+                "set_temp_f": round(float(temperature_f), 1),
+                "fan_speed": "AUTO",
+                "air_direction": "HORIZONTAL",
+                "remote_lock": remote_lock,
+            },
+        ]
+    return pattern
 
 
 # Singleton instance

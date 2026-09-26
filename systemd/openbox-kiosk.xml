@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                xsi:schemaLocation="http://openbox.org/3.4/rc file:///usr/share/openbox/rc.xsd">
+  <!-- ===================================================================== -->
+  <!-- Mitsubishi GB-50 Dedicated Kiosk Window Manager Configuration         -->
+  <!-- Disables window decorations, menus, and user navigation keystrokes    -->
+  <!-- ===================================================================== -->
+  <resistance>
+    <strength>20</strength>
+    <screen_edge_strength>40</screen_edge_strength>
+  </resistance>
+
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+    <focusLast>yes</focusLast>
+    <underMouse>no</underMouse>
+  </focus>
+
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout></titleLayout>
+    <keepBorder>no</keepBorder>
+    <animateIconify>no</animateIconify>
+    <font place="ActiveWindow"><name>sans</name><size>8</size></font>
+  </theme>
+
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+    <names>
+      <name>Kiosk</name>
+    </names>
+  </desktops>
+
+  <resize>
+    <drawContents>yes</drawContents>
+    <popupShow>Never</popupShow>
+  </resize>
+
+  <!-- Mouse bindings: Empty root menu to prevent context menus on the desktop -->
+  <mouse>
+    <dragThreshold>8</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <screenEdgeWarpTime>0</screenEdgeWarpTime>
+  </mouse>
+
+  <!-- Keyboard bindings: Intentionally left empty to lock down the UI against -->
+  <!-- Alt+Tab, Alt+F4, Super/Windows key, and desktop switching shortcuts.    -->
+  <keyboard>
+  </keyboard>
+
+  <!-- Application rules: Force all browser windows into borderless fullscreen -->
+  <applications>
+    <application class="*">
+      <decor>no</decor>
+      <shade>no</shade>
+      <fullscreen>yes</fullscreen>
+      <maximized>yes</maximized>
+      <layer>above</layer>
+    </application>
+  </applications>
+</openbox_config>

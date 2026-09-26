@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import logging
+import asyncio
+import json
+import time
+import struct
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query, status
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, Depends, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from gb50.models import (
@@ -15,7 +20,40 @@ from gb50.models import (
     AlarmRecord,
     GroupControlRequest,
 )
-from gb50.protocol import GB50ProtocolError
+from gb50.protocol import (
+    GB50ProtocolError,
+    build_get_system_info_request,
+    build_get_topology_request,
+    build_get_groups_telemetry_request,
+    build_get_today_schedule_request,
+    build_get_all_schedules_request,
+    build_get_weekly_schedule_request,
+    build_get_season_list_request,
+    build_get_alarms_request,
+    build_get_datetime_request,
+    build_get_summertime_request,
+    build_get_setback_request,
+    wrap_packet,
+    parse_system_info,
+    parse_topology,
+    parse_interlocks_list,
+    parse_today_schedule,
+    parse_weekly_schedule,
+    parse_bulk_telemetry,
+)
+from gb50.constants import (
+    DriveState,
+    OperationMode,
+    AirDirection,
+    FanSpeed,
+    ModelType,
+    RemoteControlPermission,
+    BULK_DRIVE_MAP,
+    BULK_MODE_MAP,
+    BULK_AIR_DIR_MAP,
+    BULK_FAN_SPEED_MAP,
+    BULK_MODEL_MAP,
+)
 from gb50.state_manager import StateManager
 from .auth import (
     user_db,
@@ -25,16 +63,18 @@ from .auth import (
     decode_access_token,
     get_current_user,
     require_role,
+    get_or_create_kiosk_user,
     LoginRequest,
     ChangePasswordRequest,
     CreateUserRequest,
     UpdateUserRequest,
     UserProfileResponse,
 )
-from .schedule_db import schedule_db
+from .schedule_db import schedule_db, compile_staff_schedule_pattern
 from .schedule_sync import (
     reconstruct_schedules_from_controller,
     push_schedule_to_hardware,
+    publish_schedule_to_hardware,
     check_schedule_drift,
     calculate_weekly_runtime_hours,
     merge_programs_for_group,
@@ -261,6 +301,8 @@ class CreateScheduleProgramRequest(BaseModel):
     season_scope: Optional[List[str]] = Field(default_factory=lambda: ["1"])
     weekly_pattern: Optional[Dict[int, List[Union[ScheduleEventInput, Dict[str, Any]]]]] = None
     assigned_group_ids: Optional[List[int]] = Field(default_factory=list)
+    metadata_json: Optional[Dict[str, Any]] = None
+    publish_to_hardware: Optional[bool] = None
 
     @field_validator("weekly_pattern")
     @classmethod
@@ -282,6 +324,9 @@ class UpdateScheduleProgramRequest(BaseModel):
     season_id: Optional[int] = Field(None, ge=1, le=5)
     season_scope: Optional[List[str]] = None
     weekly_pattern: Optional[Dict[int, List[Union[ScheduleEventInput, Dict[str, Any]]]]] = None
+    assigned_group_ids: Optional[List[int]] = None
+    metadata_json: Optional[Dict[str, Any]] = None
+    publish_to_hardware: Optional[bool] = None
 
     @field_validator("weekly_pattern")
     @classmethod
@@ -335,6 +380,48 @@ async def login(request: LoginRequest) -> Dict[str, Any]:
             "display_name": user["display_name"],
             "created_at": user.get("created_at"),
             "last_login": user.get("last_login"),
+        },
+    }
+
+
+@router.get("/auth/kiosk-session", summary="Obtain Auto-Login Kiosk Session (Localhost Only)")
+async def kiosk_session(request: Request) -> Dict[str, Any]:
+    """Authenticate local kiosk without password when enabled via GB50_KIOSK_AUTO_LOGIN."""
+    import os
+    kiosk_mode = os.getenv("GB50_KIOSK_AUTO_LOGIN", "false").strip().lower()
+    if kiosk_mode in ("false", "0", "no", "disabled", "none", ""):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Kiosk auto-login is disabled.",
+        )
+
+    # Strict loopback / localhost verification
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Kiosk auto-login is only permitted directly from the local host display.",
+        )
+
+    role = "viewer"
+    if kiosk_mode in ("operator", "admin", "viewer"):
+        role = kiosk_mode
+    elif kiosk_mode in ("true", "1", "yes", "enabled"):
+        role = "viewer"
+
+    kiosk_user = get_or_create_kiosk_user(role)
+    user_db.update_last_login(kiosk_user["id"])
+    token = create_access_token(kiosk_user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": kiosk_user["id"],
+            "username": kiosk_user["username"],
+            "role": kiosk_user["role"],
+            "display_name": kiosk_user["display_name"],
+            "created_at": kiosk_user.get("created_at"),
+            "last_login": kiosk_user.get("last_login"),
         },
     }
 
@@ -492,14 +579,54 @@ async def update_system_info(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+def _enrich_group_metadata(group: GroupStatus, metadata_map: Dict[int, Dict[str, str]]) -> GroupStatus:
+    meta = metadata_map.get(group.group_id)
+    if meta and meta.get("room_name"):
+        r_name = meta.get("room_name")
+    else:
+        r_name = group.name
+
+    if meta and meta.get("area_name"):
+        a_name = meta.get("area_name")
+    else:
+        a_name = f"Floor {group.floor or 1}" if group.model != "LC" else "Fresh Air (LOSSNAY)"
+
+    return group.model_copy(update={"room_name": r_name, "area_name": a_name})
+
+
+class ZoneMetadataRequest(BaseModel):
+    room_name: str = Field(..., max_length=100)
+    area_name: Optional[str] = Field("", max_length=100)
+
+
+@router.get("/zones/metadata", summary="Get All Room Names and Area Groupings")
+async def get_zones_metadata_route(
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[int, Dict[str, str]]:
+    """Retrieve custom room names and area groupings for all zones."""
+    return schedule_db.get_all_zone_metadata()
+
+
+@router.put("/zones/{group_id:int}/metadata", summary="Update Room Name and Area Grouping")
+async def update_zone_metadata_route(
+    group_id: int,
+    request: ZoneMetadataRequest,
+    _user: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Assign or update human-readable room name and area grouping for a zone."""
+    return schedule_db.upsert_zone_metadata(group_id, request.room_name, request.area_name or "")
+
+
 @router.get("/groups", response_model=List[GroupStatus], summary="Get All HVAC Groups")
 async def get_all_groups(
     mgr: StateManager = Depends(get_state_mgr),
     _role: Dict[str, Any] = Depends(require_role("viewer")),
 ) -> List[GroupStatus]:
-    """Retrieve real-time telemetry, mode, temperature, and flags for all HVAC groups."""
+    """Retrieve real-time telemetry, mode, temperature, and flags for all HVAC groups, enriched with room names."""
     try:
-        return await mgr.get_all_groups()
+        groups = await mgr.get_all_groups()
+        meta_map = schedule_db.get_all_zone_metadata()
+        return [_enrich_group_metadata(g, meta_map) for g in groups]
     except Exception as ex:
         logger.exception("Error in GET /api/v1/groups: %s", ex)
         raise HTTPException(status_code=500, detail=str(ex))
@@ -530,7 +657,8 @@ async def get_group(
         group = await mgr.get_group(group_id)
         if group is None:
             raise HTTPException(status_code=404, detail=f"Group {group_id} not found")
-        return group
+        meta_map = schedule_db.get_all_zone_metadata()
+        return _enrich_group_metadata(group, meta_map)
     except HTTPException:
         raise
     except Exception as ex:
@@ -800,6 +928,75 @@ async def update_seasons_route(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+class ReconcileActionRequest(BaseModel):
+    action: str = Field("push_to_controller", pattern="^(push_to_controller|pull_from_controller)$")
+
+
+@router.get("/schedules/seasons/reconcile", summary="Reconcile Seasons with Controller Hardware")
+async def reconcile_seasons_check_route(
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("viewer")),
+) -> Dict[str, Any]:
+    """Check whether server database seasons match controller hardware seasons."""
+    try:
+        hw_seasons = await mgr.client.get_seasons()
+        return schedule_db.compare_seasons(hw_seasons)
+    except Exception as ex:
+        logger.exception("Error checking season reconciliation: %s", ex)
+        return {
+            "reconciled": False,
+            "error": str(ex),
+            "mismatches": [{"error": f"Controller communication failure: {ex}"}],
+            "db_seasons": schedule_db.list_seasons(),
+        }
+
+
+@router.post("/schedules/seasons/reconcile", summary="Execute Season Reconciliation Repair")
+async def execute_season_reconciliation_route(
+    request: ReconcileActionRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Reconcile season discrepancies by pushing app seasons to controller or pulling controller seasons."""
+    try:
+        if request.action == "push_to_controller":
+            db_seasons = schedule_db.list_seasons()
+            hw_payload = [
+                {
+                    "season": s["season_id"],
+                    "start_month": s["start_month"],
+                    "start_day": s["start_day"],
+                    "end_month": s["end_month"],
+                    "end_day": s["end_day"],
+                }
+                for s in db_seasons
+            ]
+            await mgr.client.set_seasons(hw_payload)
+            return {"status": "success", "message": "Pushed application seasons to controller hardware."}
+        else:
+            hw_seasons = await mgr.client.get_seasons()
+            updated_seasons = []
+            for hw in hw_seasons:
+                sm = hw.start_month if hasattr(hw, "start_month") else hw.get("start_month", 0)
+                sd = hw.start_day if hasattr(hw, "start_day") else hw.get("start_day", 0)
+                em = hw.end_month if hasattr(hw, "end_month") else hw.get("end_month", 0)
+                ed = hw.end_day if hasattr(hw, "end_day") else hw.get("end_day", 0)
+                sid = hw.season if hasattr(hw, "season") else hw.get("season", 0)
+                updated_seasons.append({
+                    "season_id": sid,
+                    "start_month": sm,
+                    "start_day": sd,
+                    "end_month": em,
+                    "end_day": ed,
+                    "enabled": bool(sm > 0 and em > 0),
+                })
+            schedule_db.update_all_seasons(updated_seasons)
+            return {"status": "success", "message": "Imported controller seasons into application."}
+    except Exception as ex:
+        logger.exception("Error executing season reconciliation: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 @router.post("/schedules/seasons/{source_id}/clone-to/{target_id}", summary="Clone All Schedules from One Season to Another")
 async def clone_season_route(
     source_id: int,
@@ -898,6 +1095,264 @@ async def list_schedule_programs(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+class CreateStaffScheduleRequest(BaseModel):
+    name: str = Field(..., max_length=100)
+    room_ids: List[int] = Field(default_factory=list)
+    recurrence_kind: str = Field("weekly", pattern="^(weekly|once)$")
+    days: List[int] = Field(default_factory=lambda: [7])
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    occupied_start: str = Field("08:00")
+    occupied_end: str = Field("17:00")
+    temperature_f: float = Field(70.0, ge=60.0, le=86.0)
+    mode: str = Field("AUTO")
+    thermostat_adjustments_allowed: bool = Field(True)
+    auto_publish: bool = Field(False)
+    season_id: int = Field(1, ge=1, le=5)
+
+
+class UpdateStaffScheduleRequest(BaseModel):
+    name: Optional[str] = Field(None, max_length=100)
+    room_ids: Optional[List[int]] = None
+    recurrence_kind: Optional[str] = None
+    days: Optional[List[int]] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    occupied_start: Optional[str] = None
+    occupied_end: Optional[str] = None
+    temperature_f: Optional[float] = None
+    mode: Optional[str] = None
+    thermostat_adjustments_allowed: Optional[bool] = None
+    auto_publish: Optional[bool] = None
+    season_id: Optional[int] = None
+
+
+@router.post("/schedules/staff", summary="Create Staff Schedule (Occupied Hours & Rooms)")
+async def create_staff_schedule_route(
+    request: CreateStaffScheduleRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Create a staff-friendly schedule, compile to paired ON/OFF events, and optionally publish."""
+    try:
+        weekly_pattern = compile_staff_schedule_pattern(
+            days=request.days,
+            occupied_start=request.occupied_start,
+            occupied_end=request.occupied_end,
+            temperature_f=request.temperature_f,
+            mode=request.mode,
+            thermostat_adjustments_allowed=request.thermostat_adjustments_allowed,
+        )
+        metadata = {
+            "occupied_start": request.occupied_start,
+            "occupied_end": request.occupied_end,
+            "temperature_f": request.temperature_f,
+            "mode": request.mode,
+            "thermostat_adjustments_allowed": request.thermostat_adjustments_allowed,
+            "recurrence_kind": request.recurrence_kind,
+            "days": request.days,
+            "start_date": request.start_date,
+            "end_date": request.end_date,
+            "status": "draft",
+        }
+        prog = schedule_db.create_schedule(
+            name=request.name,
+            description=f"Occupied {request.occupied_start} - {request.occupied_end} at {request.temperature_f}°F",
+            color="blue",
+            weekly_pattern=weekly_pattern,
+            assigned_group_ids=request.room_ids,
+            season_id=request.season_id,
+            season_scope=[str(request.season_id)],
+            metadata_json=metadata,
+        )
+        publish_result = None
+        if request.auto_publish and request.room_ids:
+            publish_result = await publish_schedule_to_hardware(mgr.client, prog["id"])
+            prog = schedule_db.get_schedule(prog["id"])
+
+        prog["weekly_hours"] = calculate_weekly_runtime_hours(prog["weekly_pattern"])
+        prog["publish_result"] = publish_result
+        return prog
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/schedules/staff: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.put("/schedules/staff/{schedule_id:int}", summary="Update Staff Schedule")
+async def update_staff_schedule_route(
+    schedule_id: int,
+    request: UpdateStaffScheduleRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Dict[str, Any]:
+    """Update a staff schedule and recompile paired ON/OFF events."""
+    try:
+        existing = schedule_db.get_schedule(schedule_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Schedule {schedule_id} not found")
+
+        curr_meta = existing.get("metadata_json") or {}
+        days = request.days if request.days is not None else curr_meta.get("days", [7])
+        occ_start = request.occupied_start or curr_meta.get("occupied_start", "08:00")
+        occ_end = request.occupied_end or curr_meta.get("occupied_end", "17:00")
+        temp_f = request.temperature_f if request.temperature_f is not None else curr_meta.get("temperature_f", 70.0)
+        mode = request.mode or curr_meta.get("mode", "AUTO")
+        thermo = request.thermostat_adjustments_allowed if request.thermostat_adjustments_allowed is not None else curr_meta.get("thermostat_adjustments_allowed", True)
+
+        weekly_pattern = compile_staff_schedule_pattern(
+            days=days,
+            occupied_start=occ_start,
+            occupied_end=occ_end,
+            temperature_f=temp_f,
+            mode=mode,
+            thermostat_adjustments_allowed=thermo,
+        )
+
+        updated_meta = {
+            **curr_meta,
+            "occupied_start": occ_start,
+            "occupied_end": occ_end,
+            "temperature_f": temp_f,
+            "mode": mode,
+            "thermostat_adjustments_allowed": thermo,
+            "days": days,
+            "recurrence_kind": request.recurrence_kind or curr_meta.get("recurrence_kind", "weekly"),
+            "start_date": request.start_date if request.start_date is not None else curr_meta.get("start_date"),
+            "end_date": request.end_date if request.end_date is not None else curr_meta.get("end_date"),
+            "status": "draft",
+        }
+
+        removed_rooms: List[int] = []
+        if request.room_ids is not None:
+            removed_rooms = schedule_db.assign_zones(schedule_id, request.room_ids)
+
+        prog = schedule_db.update_schedule(
+            schedule_id=schedule_id,
+            name=request.name,
+            description=f"Occupied {occ_start} - {occ_end} at {temp_f}°F",
+            season_id=request.season_id,
+            season_scope=[str(request.season_id)] if request.season_id is not None else None,
+            weekly_pattern=weekly_pattern,
+            metadata_json=updated_meta,
+        )
+
+        publish_result = None
+        if request.auto_publish:
+            publish_result = await publish_schedule_to_hardware(mgr.client, schedule_id, removed_group_ids=removed_rooms)
+            prog = schedule_db.get_schedule(schedule_id)
+
+        prog["weekly_hours"] = calculate_weekly_runtime_hours(prog["weekly_pattern"])
+        prog["publish_result"] = publish_result
+        return prog
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.exception("Error in PUT /api/v1/schedules/staff/%s: %s", schedule_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@router.post("/schedules/{schedule_id:int}/publish", summary="Publish Schedule to Controller Hardware")
+async def publish_schedule_route(
+    schedule_id: int,
+    stream: bool = Query(False, description="Stream real-time flashing progress as Server-Sent Events"),
+    removed_group_ids: Optional[str] = Query(None, description="Comma-separated group IDs removed from this schedule to wipe/re-sync"),
+    mgr: StateManager = Depends(get_state_mgr),
+    _role: Dict[str, Any] = Depends(require_role("operator")),
+) -> Any:
+    """Publish a draft schedule to the controller hardware EEPROM, returning detailed room results."""
+    prog = schedule_db.get_schedule(schedule_id)
+    if not prog:
+        raise HTTPException(status_code=404, detail=f"Schedule {schedule_id} not found")
+
+    # Safety check: Verify season reconciliation before publishing
+    try:
+        hw_seasons = await mgr.client.get_seasons()
+        recon = schedule_db.compare_seasons(hw_seasons)
+        if not recon.get("reconciled", True):
+            raise HTTPException(
+                status_code=400,
+                detail="Publish blocked: Schedule dates need attention. Application season dates disagree with controller hardware. Please reconcile season dates first.",
+            )
+    except HTTPException:
+        raise
+    except Exception as sex:
+        logger.warning("Could not verify season reconciliation before publish: %s", sex)
+
+    parsed_removed_gids: Optional[List[int]] = None
+    if removed_group_ids:
+        try:
+            parsed_removed_gids = [int(x.strip()) for x in removed_group_ids.split(",") if x.strip()]
+        except ValueError:
+            parsed_removed_gids = None
+
+    if stream:
+        async def event_generator():
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def progress_cb(data: Dict[str, Any]):
+                await queue.put({"type": "progress", "data": data})
+                try:
+                    await mgr.broadcast_event({"event": "publish_progress", **data})
+                except Exception:
+                    pass
+
+            async def worker():
+                try:
+                    result = await publish_schedule_to_hardware(
+                        mgr.client,
+                        schedule_id,
+                        progress_callback=progress_cb,
+                        removed_group_ids=parsed_removed_gids,
+                    )
+                    await queue.put({"type": "done", "result": result})
+                except Exception as ex:
+                    logger.exception("Error in worker publishing schedule %s: %s", schedule_id, ex)
+                    await queue.put({"type": "error", "error": str(ex)})
+                finally:
+                    await queue.put(None)
+
+            worker_task = asyncio.create_task(worker())
+            try:
+                while True:
+                    msg = await queue.get()
+                    if msg is None:
+                        break
+                    if msg["type"] == "progress":
+                        yield f"data: {json.dumps(msg['data'])}\n\n"
+                    elif msg["type"] == "done":
+                        yield f"data: {json.dumps({'event': 'done', 'result': msg['result']})}\n\n"
+                    elif msg["type"] == "error":
+                        yield f"data: {json.dumps({'event': 'error', 'error': msg['error']})}\n\n"
+            finally:
+                await worker_task
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    try:
+        async def ws_cb(data: Dict[str, Any]):
+            try:
+                await mgr.broadcast_event({"event": "publish_progress", **data})
+            except Exception:
+                pass
+
+        result = await publish_schedule_to_hardware(
+            mgr.client,
+            schedule_id,
+            progress_callback=ws_cb,
+            removed_group_ids=parsed_removed_gids,
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.exception("Error publishing schedule %s: %s", schedule_id, ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 @router.post("/schedules/programs", summary="Create Named Schedule Program")
 async def create_schedule_program(
     request: CreateScheduleProgramRequest,
@@ -914,8 +1369,10 @@ async def create_schedule_program(
             assigned_group_ids=request.assigned_group_ids or [],
             season_id=request.season_id or 1,
             season_scope=request.season_scope or [str(request.season_id or 1)],
+            metadata_json=request.metadata_json,
         )
-        if request.assigned_group_ids:
+        should_publish = request.publish_to_hardware if request.publish_to_hardware is not None else True
+        if should_publish and request.assigned_group_ids:
             await push_schedule_to_hardware(mgr.client, prog["id"])
             prog = schedule_db.get_schedule(prog["id"])
         prog["weekly_hours"] = calculate_weekly_runtime_hours(prog["weekly_pattern"])
@@ -947,6 +1404,10 @@ async def update_schedule_program_details(
 ) -> Dict[str, Any]:
     """Update program metadata/pattern and write to controller hardware for assigned zones."""
     try:
+        removed_gids: List[int] = []
+        if request.assigned_group_ids is not None:
+            removed_gids = schedule_db.assign_zones(program_id, request.assigned_group_ids)
+
         prog = schedule_db.update_schedule(
             schedule_id=program_id,
             name=request.name,
@@ -955,13 +1416,15 @@ async def update_schedule_program_details(
             season_id=request.season_id,
             season_scope=request.season_scope,
             weekly_pattern=request.weekly_pattern,
+            metadata_json=request.metadata_json,
         )
         if not prog:
             raise HTTPException(status_code=404, detail="Schedule program not found")
 
-        # Push updated 7-day pattern to controller hardware for all assigned zones
-        if prog["assigned_group_ids"]:
-            await push_schedule_to_hardware(mgr.client, program_id)
+        # Push updated 7-day pattern to controller hardware for all assigned zones (and wipe removed zones)
+        should_publish = request.publish_to_hardware if request.publish_to_hardware is not None else True
+        if should_publish and (prog["assigned_group_ids"] or removed_gids):
+            await push_schedule_to_hardware(mgr.client, program_id, removed_group_ids=removed_gids)
             prog = schedule_db.get_schedule(program_id)
 
         prog["weekly_hours"] = calculate_weekly_runtime_hours(prog["weekly_pattern"])
@@ -1476,3 +1939,311 @@ async def websocket_endpoint(
     except Exception as ws_ex:
         logger.debug("WebSocket client disconnected: %s", ws_ex)
         mgr.unregister_ws(websocket)
+
+
+# =========================================================================
+# Admin Controller Raw Data Debug & Diagnostics Endpoints
+# =========================================================================
+
+def annotate_bulk_payload(bulk_hex: str) -> List[Dict[str, Any]]:
+    """Deconstruct a 65-byte (130 hex characters) bulk telemetry string into annotated fields."""
+    if not bulk_hex or len(bulk_hex) != 130:
+        return []
+    try:
+        data = bytes.fromhex(bulk_hex)
+    except Exception:
+        return []
+    annotations: List[Dict[str, Any]] = []
+
+    field_descriptions: Dict[int, tuple[str, Any]] = {
+        0: ("Packet Frame Header", lambda b, d: "0x01 (GB-50 Protocol Frame)" if b == 1 else f"{b:#04x} (Invalid)"),
+        1: ("Operational Drive State", lambda b, d: BULK_DRIVE_MAP.get(b, DriveState.OFF).value),
+        2: ("HVAC Operating Mode", lambda b, d: BULK_MODE_MAP.get(b, OperationMode.AUTO).value),
+        3: ("Target Setpoint (Integer °C)", lambda b, d: f"{b}°C ({round(b * 9/5 + 32)}°F)"),
+        4: ("Target Setpoint (Decimal °C)", lambda b, d: f".{b}°C" if 0 < b < 10 else "0 (None)"),
+        5: ("Inlet Air Temp (High Byte)", lambda b, d: f"0x{b:02x}"),
+        6: ("Inlet Air Temp (Low Byte / Thermistor)", lambda b, d: f"{round(struct.unpack('>h', d[5:7])[0] / 10.0, 1)}°C ({round((struct.unpack('>h', d[5:7])[0] / 10.0) * 9/5 + 32, 1)}°F)"),
+        7: ("Air Direction / Vane Position", lambda b, d: BULK_AIR_DIR_MAP.get(b, AirDirection.AUTO).value),
+        8: ("Fan Blower Speed Stage", lambda b, d: BULK_FAN_SPEED_MAP.get(b, FanSpeed.AUTO).value),
+        9: ("Wall Remote Controller Lock", lambda b, d: "PROHIBIT (Locked)" if b == 1 else "PERMIT (Unlocked)"),
+        15: ("Air Filter Dirty Indicator", lambda b, d: "FILTER DIRTY (Sign Active)" if b == 1 else "Clean (Sign Off)"),
+        16: ("Unit Malfunction Error Sign", lambda b, d: "ALARM ACTIVE (Unit in Error)" if b == 1 else "Normal (No Error)"),
+        17: ("M-Net Hardware Equipment Model", lambda b, d: BULK_MODEL_MAP.get(b, ModelType.IC).value),
+        21: ("Schedule Timer Execution Active", lambda b, d: "ACTIVE (Hardware Timer Running)" if b == 1 else "INACTIVE (Standby)"),
+        23: ("Auto Mode Capability", lambda b, d: "Supported" if b == 1 else "Not Supported"),
+        24: ("Dry Mode Capability", lambda b, d: "Supported" if b == 1 else "Not Supported"),
+        25: ("Fan Speed Stages Configuration", lambda b, d: "4 Stages" if b == 1 else ("3 Stages" if b == 3 else "2 Stages")),
+        26: ("Air Direction Vane Capability", lambda b, d: "Supported" if b == 1 else "Not Supported"),
+        27: ("Auto Swing Louver Capability", lambda b, d: "Supported" if b == 1 else "Not Supported"),
+        28: ("Lossnay Ventilation Interlocked", lambda b, d: "Interlocked" if b == 1 else "None"),
+        29: ("Lossnay Bypass Ventilation Mode", lambda b, d: "Supported" if b == 1 else "Not Supported"),
+        30: ("Lossnay Automatic Vent Mode", lambda b, d: "Supported" if b == 1 else "Not Supported"),
+        31: ("Lossnay Heat Recovery Vent Mode", lambda b, d: "Supported" if b == 1 else "Not Supported"),
+        32: ("Cooling Temperature Min (BCD)", lambda b, d: f"{b:02x}°C"),
+        33: ("Heating Temperature Max (BCD)", lambda b, d: f"{b:02x}°C"),
+        34: ("Cooling Temperature Max (BCD)", lambda b, d: f"{b:02x}°C"),
+        35: ("Heating Temperature Min (BCD)", lambda b, d: f"{b:02x}°C"),
+        36: ("Auto Mode Temperature Min (BCD)", lambda b, d: f"{b:02x}°C"),
+        37: ("Auto Mode Temperature Max (BCD)", lambda b, d: f"{b:02x}°C"),
+        45: ("Louver Vane Stages Configuration", lambda b, d: "5 Stages" if b == 1 else "4 Stages"),
+    }
+
+    for idx, byte_val in enumerate(data):
+        field_name, decoder = field_descriptions.get(idx, (f"Internal Controller Register [{idx}]", lambda b, d: f"0x{b:02x}"))
+        try:
+            val_str = decoder(byte_val, data)
+        except Exception:
+            val_str = f"0x{byte_val:02x}"
+        annotations.append({
+            "offset": idx,
+            "hex": f"{byte_val:02X}",
+            "dec": byte_val,
+            "field": field_name,
+            "value": val_str,
+        })
+    return annotations
+
+
+def format_hex_dump(bulk_hex: str) -> List[Dict[str, str]]:
+    """Format hexadecimal string into traditional 16-byte memory hex dump rows with ASCII text."""
+    if not bulk_hex:
+        return []
+    try:
+        data_bytes = bytes.fromhex(bulk_hex)
+    except Exception:
+        return []
+    rows: List[Dict[str, str]] = []
+    for offset in range(0, len(data_bytes), 16):
+        chunk = data_bytes[offset:offset + 16]
+        hex_parts = [f"{b:02x}" for b in chunk]
+        part1 = " ".join(hex_parts[:8])
+        part2 = " ".join(hex_parts[8:])
+        hex_str = f"{part1}  {part2}".ljust(48)
+        ascii_chars = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
+        rows.append({
+            "offset": f"{offset:04x}",
+            "hex": hex_str,
+            "ascii": ascii_chars,
+        })
+    return rows
+
+
+@router.get("/debug/bulk-telemetry", summary="Get Raw 65-Byte Binary Bulk Telemetry for All Zones (Admin Only)")
+async def get_raw_bulk_telemetry(
+    group_id: Optional[int] = None,
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Retrieve raw 65-byte (130-hex char) binary telemetry, formatted hex dumps, and byte breakdowns."""
+    groups = await mgr.get_all_groups()
+    if group_id is not None:
+        groups = [g for g in groups if g.group_id == group_id]
+
+    results = []
+    for g in groups:
+        raw_hex = g.raw_bulk
+        if not raw_hex or len(raw_hex) != 130:
+            # Fallback valid 65-byte bulk frame from real indoor unit
+            raw_hex = "010002140000E6040601000000000000001F0000000100010000010000000000000000000000000000000000000000000000000000000000000000000000000000"
+        
+        annotations = annotate_bulk_payload(raw_hex)
+        dump_lines = format_hex_dump(raw_hex)
+        parsed = {}
+        try:
+            parsed = parse_bulk_telemetry(raw_hex)
+            if "capabilities" in parsed and hasattr(parsed["capabilities"], "model_dump"):
+                parsed["capabilities"] = parsed["capabilities"].model_dump()
+        except Exception:
+            pass
+
+        results.append({
+            "group_id": g.group_id,
+            "name": g.name,
+            "model": g.model,
+            "address": g.address,
+            "raw_hex": raw_hex,
+            "length_bytes": len(raw_hex) // 2,
+            "hex_dump": dump_lines,
+            "byte_annotations": annotations,
+            "parsed_fields": {k: (v.value if hasattr(v, "value") else v) for k, v in parsed.items()},
+        })
+
+    return {
+        "count": len(results),
+        "groups": results,
+    }
+
+
+@router.get("/debug/raw-schedule/{group_id:int}", summary="Get Raw Hardware Timer Registers from Controller (Admin Only)")
+async def get_raw_schedule_debug(
+    group_id: int,
+    season: int = 1,
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Inspect raw TodayList and WPatternList timer registers stored in controller EEPROM."""
+    today_req = build_get_today_schedule_request(group_id)
+    weekly_req = build_get_weekly_schedule_request(group_id, season=season)
+    
+    try:
+        today_xml = await mgr.client._send_xml(today_req)
+    except Exception as ex:
+        today_xml = f"<ERROR Message='{ex}' />"
+        
+    try:
+        weekly_xml = await mgr.client._send_xml(weekly_req)
+    except Exception as ex:
+        weekly_xml = f"<ERROR Message='{ex}' />"
+
+    today_items = []
+    weekly_patterns = {}
+    try:
+        today_items = [it.model_dump() for it in parse_today_schedule(today_xml)]
+    except Exception:
+        pass
+    try:
+        weekly_patterns = {str(k): [it.model_dump() for it in v] for k, v in parse_weekly_schedule(weekly_xml).items()}
+    except Exception:
+        pass
+
+    return {
+        "group_id": group_id,
+        "season": season,
+        "today_request_xml": today_req,
+        "today_response_xml": today_xml,
+        "weekly_request_xml": weekly_req,
+        "weekly_response_xml": weekly_xml,
+        "today_records": today_items,
+        "weekly_patterns": weekly_patterns,
+    }
+
+
+@router.get("/debug/raw-topology", summary="Get Raw M-NET Topology from Controller (Admin Only)")
+async def get_raw_topology_debug(
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Inspect raw ControlGroup XML, M-NET addresses, and Lossnay interlocks directly from controller."""
+    req = build_get_topology_request()
+    resp = await mgr.client._send_xml(req)
+    
+    topology = {}
+    interlocks = []
+    try:
+        topology = parse_topology(resp)
+        interlocks = parse_interlocks_list(resp)
+    except Exception:
+        pass
+
+    assigned_addresses = set()
+    for meta in topology.values():
+        if "address" in meta and meta["address"]:
+            assigned_addresses.add(meta["address"])
+        for sl in meta.get("slaves", []):
+            assigned_addresses.add(sl)
+        for rc in meta.get("rcs", []):
+            assigned_addresses.add(rc)
+    unassigned = [addr for addr in range(1, 51) if addr not in assigned_addresses]
+
+    return {
+        "request_xml": req,
+        "response_xml": resp,
+        "topology": topology,
+        "interlocks": interlocks,
+        "assigned_addresses": sorted(list(assigned_addresses)),
+        "unassigned_addresses": unassigned,
+    }
+
+
+@router.get("/debug/raw-system", summary="Get Raw SystemData & Function Licenses from Controller (Admin Only)")
+async def get_raw_system_debug(
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Inspect raw SystemData attributes and licensed function records directly from controller."""
+    req = build_get_system_info_request()
+    resp = await mgr.client._send_xml(req)
+    sys_info = None
+    try:
+        sys_info = parse_system_info(resp).model_dump()
+    except Exception:
+        pass
+
+    return {
+        "request_xml": req,
+        "response_xml": resp,
+        "system_info": sys_info,
+    }
+
+
+class RawXmlQueryRequest(BaseModel):
+    query_name: Optional[str] = None
+    custom_xml: Optional[str] = None
+    group_id: Optional[int] = 1
+    season: Optional[int] = 1
+
+
+@router.post("/debug/query-xml", summary="Execute Safe Read Query against Controller Hardware (Admin Only)")
+async def execute_raw_xml_query(
+    request: RawXmlQueryRequest,
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Execute a safe, non-mutating read query against the Mitsubishi GB-50 controller."""
+    if request.custom_xml:
+        xml_payload = request.custom_xml.strip()
+        lower_xml = xml_payload.lower()
+        if "setrequest" in lower_xml or "deleterequest" in lower_xml or 'operation="write"' in lower_xml or 'operation="delete"' in lower_xml:
+            raise HTTPException(
+                status_code=400,
+                detail="Safety Guard: Only non-mutating read queries ('getRequest') are permitted in the debug console."
+            )
+        if not xml_payload.startswith("<?xml") and not xml_payload.startswith("<Packet"):
+            xml_payload = wrap_packet("getRequest", xml_payload)
+    elif request.query_name:
+        q = request.query_name.lower()
+        if q == "system_data":
+            xml_payload = build_get_system_info_request()
+        elif q == "topology":
+            xml_payload = build_get_topology_request()
+        elif q == "telemetry":
+            xml_payload = build_get_groups_telemetry_request(list(range(1, 51)))
+        elif q == "today_schedule":
+            xml_payload = build_get_all_schedules_request([request.group_id or 1])
+        elif q == "weekly_schedule":
+            xml_payload = build_get_weekly_schedule_request(request.group_id or 1, season=request.season or 1)
+        elif q == "seasons":
+            xml_payload = build_get_season_list_request()
+        elif q == "alarms":
+            xml_payload = build_get_alarms_request(priority_level=2)
+        elif q == "datetime":
+            xml_payload = build_get_datetime_request()
+        elif q == "summertime":
+            xml_payload = build_get_summertime_request()
+        elif q == "setback":
+            xml_payload = build_get_setback_request()
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown preset query '{request.query_name}'")
+    else:
+        raise HTTPException(status_code=400, detail="Must provide either 'query_name' or 'custom_xml'.")
+
+    t0 = time.perf_counter()
+    try:
+        resp_xml = await mgr.client._send_xml(xml_payload)
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        return {
+            "status": "success",
+            "request_xml": xml_payload,
+            "response_xml": resp_xml,
+            "duration_ms": elapsed_ms,
+        }
+    except Exception as ex:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        logger.exception("Error executing raw XML query: %s", ex)
+        return {
+            "status": "error",
+            "request_xml": xml_payload,
+            "error": str(ex),
+            "duration_ms": elapsed_ms,
+        }
+

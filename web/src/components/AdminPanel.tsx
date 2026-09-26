@@ -20,7 +20,8 @@ import {
   UserPlus,
   Edit2,
   X,
-  Eye
+  Eye,
+  Cpu
 } from 'lucide-react';
 import { 
   GroupStatus, 
@@ -31,6 +32,7 @@ import {
   UserRole 
 } from '../types';
 import { DestructiveConfirmModal } from './DestructiveConfirmModal';
+import { AdminDebugView } from './AdminDebugView';
 import { 
   fetchAlarms, 
   clearAlarms,
@@ -62,7 +64,8 @@ type AdminSubTab =
   | 'setback' 
   | 'licenses' 
   | 'security' 
-  | 'diagnostics';
+  | 'diagnostics'
+  | 'debug';
 
 interface AdminPanelProps {
   systemInfo: SystemInfo | null;
@@ -76,6 +79,7 @@ interface AdminPanelProps {
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   systemInfo,
   groups,
+  tempUnit = 'F',
   onRefreshGroups,
   activeSubTab,
   onSubTabChange,
@@ -636,6 +640,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           { id: 'licenses', label: 'Software Licenses', icon: ShieldCheck },
           { id: 'security', label: 'User Security & Accounts', icon: Key },
           { id: 'diagnostics', label: `Alarms & Diagnostics (${alarms.length})`, icon: AlertTriangle },
+          { id: 'debug', label: 'Raw Controller Data', icon: Cpu },
         ].map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -2359,6 +2364,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         );
       })()}
+
+      {/* Subtab 9: Raw Controller Data & Hardware Diagnostics */}
+      {subTab === 'debug' && (
+        <AdminDebugView
+          systemInfo={systemInfo}
+          groups={groups}
+          tempUnit={tempUnit}
+        />
+      )}
     </div>
   );
 };

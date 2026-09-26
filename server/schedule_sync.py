@@ -6,8 +6,8 @@ import hashlib
 import json
 import logging
 import asyncio
-from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime
+from typing import Dict, List, Optional, Any, Tuple, Callable, Awaitable
+from datetime import datetime, timezone
 
 from gb50.client import GB50Client
 from gb50.models import ScheduleItem, GroupStatus
@@ -32,7 +32,16 @@ def _event_key(ev: Dict[str, Any]) -> str:
     lock = ev.get("remote_lock", "PERMIT") or "PERMIT"
     if hasattr(lock, "value"):
         lock = lock.value
+    # For OFF events, controller temperature, mode, fan, and vane are irrelevant
+    if d == "OFF":
+        return f"{h:02d}:{m:02d}|OFF|||||{lock}"
     return f"{h:02d}:{m:02d}|{d}|{mode}|{temp_str}|{fan}|{vane}|{lock}"
+
+
+def _daily_events_sig(events: List[Dict[str, Any]]) -> str:
+    """Canonical signature for a single day's routine events."""
+    sorted_events = sorted(events, key=lambda e: (e.get("hour", 0), e.get("minute", 0)))
+    return ",".join(_event_key(e) for e in sorted_events)
 
 
 def fingerprint_pattern(pattern: Dict[int, List[Dict[str, Any]]]) -> str:
@@ -99,12 +108,15 @@ def generate_smart_name(
                 elif ev.get("drive") == "OFF" and sample_off_time is None:
                     sample_off_time = f"{ev.get('hour', 0):02d}:{ev.get('minute', 0):02d}"
 
+    day_names = {1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday", 6: "Saturday", 7: "Sunday"}
+    day_labels = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
+
     if not active_days:
         return "Standby / Unscheduled", f"No scheduled timer events ({group_count} zones)"
 
     is_weekdays = (active_days == [1, 2, 3, 4, 5])
     is_all_week = (len(active_days) == 7)
-    is_weekend = (active_days == [6, 7] or active_days == [7])
+    is_weekend = (active_days == [6, 7])
 
     time_span = ""
     if sample_on_time and sample_off_time:
@@ -115,7 +127,11 @@ def generate_smart_name(
     temp_note = f" at {sample_temp_f}°F" if sample_temp_f else ""
     temp_suffix = f" ({sample_temp_f}°F)" if sample_temp_f else ""
 
-    if is_weekdays:
+    if len(active_days) == 1:
+        d_name = day_names[active_days[0]]
+        name = f"{d_name} Routine{time_span}{temp_suffix}"
+        desc = f"Active {d_name}{temp_note} ({group_count} zones)"
+    elif is_weekdays:
         name = f"Weekday Routine{time_span}{temp_suffix}"
         desc = f"Active Monday through Friday{temp_note} ({group_count} zones)"
     elif is_all_week:
@@ -123,10 +139,9 @@ def generate_smart_name(
         desc = f"Active 7 days a week{temp_note} ({group_count} zones)"
     elif is_weekend:
         name = f"Weekend Routine{time_span}{temp_suffix}"
-        desc = f"Active Saturday/Sunday{temp_note} ({group_count} zones)"
+        desc = f"Active Saturday and Sunday{temp_note} ({group_count} zones)"
     else:
-        day_labels = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
-        day_str = "/".join(day_labels[d] for d in active_days[:3])
+        day_str = "/".join(day_labels[d] for d in active_days)
         name = f"{day_str} Schedule{time_span}{temp_suffix}"
         desc = f"Custom weekly routine ({group_count} zones)"
 
@@ -350,14 +365,28 @@ async def reconstruct_schedules_from_controller(
             raise GB50ProtocolError(f"Failed to read weekly schedule for group {g.group_id} ({g.name}): {ex}") from ex
         await asyncio.sleep(0.04)
 
-    clusters: Dict[str, List[int]] = {}
-    cluster_sample_patterns: Dict[str, Dict[int, List[Dict[str, Any]]]] = {}
+    # Cluster daily routines: each cluster contains active days with the exact same times and events.
+    # Key: (daily_sig, tuple(sorted(active_days))) -> list of group_ids
+    clusters: Dict[Tuple[str, Tuple[int, ...]], List[int]] = {}
+    cluster_sample_events: Dict[Tuple[str, Tuple[int, ...]], List[Dict[str, Any]]] = {}
 
     for gid, pat in group_patterns.items():
-        fp = fingerprint_pattern(pat)
-        clusters.setdefault(fp, []).append(gid)
-        if fp not in cluster_sample_patterns:
-            cluster_sample_patterns[fp] = pat
+        zone_routines: Dict[str, Tuple[List[int], List[Dict[str, Any]]]] = {}
+        for day in range(1, 8):
+            day_events = pat.get(day, [])
+            if not day_events:
+                continue
+            sig = _daily_events_sig(day_events)
+            if sig not in zone_routines:
+                zone_routines[sig] = ([day], day_events)
+            else:
+                zone_routines[sig][0].append(day)
+
+        for sig, (days, sample_events) in zone_routines.items():
+            cluster_key = (sig, tuple(sorted(days)))
+            clusters.setdefault(cluster_key, []).append(gid)
+            if cluster_key not in cluster_sample_events:
+                cluster_sample_events[cluster_key] = sample_events
 
     if force:
         for s in schedule_db.list_schedules():
@@ -365,18 +394,54 @@ async def reconstruct_schedules_from_controller(
 
     color_idx = 0
     created_programs = []
-    sorted_fps = sorted(
+    # Sort clusters: largest zone groups first
+    sorted_cluster_keys = sorted(
         clusters.keys(),
-        key=lambda k: (0 if k != "EMPTY_SCHEDULE" else 1, -len(clusters[k]))
+        key=lambda k: -len(clusters[k])
     )
 
-    for idx, fp in enumerate(sorted_fps, 1):
-        gids = sorted(clusters[fp])
-        pat = cluster_sample_patterns[fp]
+    for idx, cluster_key in enumerate(sorted_cluster_keys, 1):
+        gids = sorted(clusters[cluster_key])
+        sample_events = cluster_sample_events[cluster_key]
+        active_days = list(cluster_key[1])
+
+        # Build 7-day pattern where only active_days have the sample events
+        pat: Dict[int, List[Dict[str, Any]]] = {
+            d: [dict(e) for e in sample_events] if d in active_days else []
+            for d in range(1, 8)
+        }
+
         name, desc = generate_smart_name(pat, len(gids), idx)
-        color = "slate" if fp == "EMPTY_SCHEDULE" else DEFAULT_COLORS[color_idx % len(DEFAULT_COLORS)]
-        if fp != "EMPTY_SCHEDULE":
-            color_idx += 1
+        color = DEFAULT_COLORS[color_idx % len(DEFAULT_COLORS)]
+        color_idx += 1
+
+        first_on = next((e for e in sample_events if e.get("drive") != "OFF"), None)
+        first_off = next((e for e in sample_events if e.get("drive") == "OFF"), None)
+        sample_on_time = f"{first_on['hour']:02d}:{first_on['minute']:02d}" if first_on else None
+        sample_off_time = f"{first_off['hour']:02d}:{first_off['minute']:02d}" if first_off else None
+        temp_c = first_on.get("set_temp_c") if first_on else None
+        temp_f = round((temp_c * 9.0 / 5.0) + 32.0, 1) if temp_c is not None else 70.0
+        mode = (first_on.get("mode") or "AUTO") if first_on else "AUTO"
+        thermo = all(e.get("remote_lock") != "PROHIBIT" for e in sample_events)
+
+        meta = {
+            "days": active_days,
+            "occupied_start": sample_on_time,
+            "occupied_end": sample_off_time,
+            "temperature_f": temp_f,
+            "mode": mode,
+            "thermostat_adjustments_allowed": thermo,
+            "recurrence_kind": "weekly",
+            "status": "published",
+        }
+
+        # Deduplicate schedule names if multiple routines happen to share the same name
+        base_name = name
+        dup_count = 1
+        existing_names = {p["name"] for p in created_programs}
+        while name in existing_names:
+            dup_count += 1
+            name = f"{base_name} ({dup_count})"
 
         prog = schedule_db.create_schedule(
             name=name,
@@ -384,24 +449,33 @@ async def reconstruct_schedules_from_controller(
             color=color,
             weekly_pattern=pat,
             assigned_group_ids=gids,
+            metadata_json=meta,
         )
         created_programs.append(prog)
 
-    logger.info(f"Successfully auto-reconstructed {len(created_programs)} schedule programs in SQLite DB.")
+    # Reconstruction reads ground truth directly from the controller; clear any pending syncs
+    schedule_db.clear_all_pending_group_syncs()
+
+    logger.info(f"Successfully auto-reconstructed {len(created_programs)} schedule programs in SQLite DB (grouped by exact daily times; skipped empty zones).")
     return schedule_db.list_schedules()
 
 
-async def push_schedule_to_hardware(client: GB50Client, schedule_id: int) -> bool:
-    """Push schedule changes to all groups that subscribe to this schedule program across its scoped seasons."""
+async def publish_schedule_to_hardware(
+    client: GB50Client,
+    schedule_id: int,
+    progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    removed_group_ids: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """Publish schedule changes to controller hardware EEPROM, tracking per-room success and errors,
+    and synchronizing/wiping any rooms removed from this schedule."""
     prog = schedule_db.get_schedule(schedule_id)
-    if not prog or not prog["assigned_group_ids"]:
-        return True
+    if not prog:
+        raise ValueError(f"Schedule program {schedule_id} not found")
 
-    gids = prog["assigned_group_ids"]
+    gids = list(prog.get("assigned_group_ids") or [])
     season_id = prog.get("season_id", 1)
     season_scope = prog.get("season_scope", [str(season_id)])
-    
-    # Determine which hardware season slots to flash
+
     seasons_to_sync: List[int] = []
     if "all" in season_scope:
         seasons_to_sync = [1, 2, 3, 4, 5]
@@ -412,13 +486,176 @@ async def push_schedule_to_hardware(client: GB50Client, schedule_id: int) -> boo
         if not seasons_to_sync:
             seasons_to_sync = [season_id]
 
-    logger.info(f"Re-syncing {len(gids)} groups subscribed to program '{prog['name']}' across seasons {seasons_to_sync}...")
-    for s in set(seasons_to_sync):
-        for gid in gids:
-            await sync_group_hardware(client, gid, season=s)
-            await asyncio.sleep(0.04)
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-    return True
+    # Collect removed group IDs (explicitly passed or from pending syncs table)
+    rem_gids_set = set(removed_group_ids or [])
+    pending_syncs = set(schedule_db.get_pending_group_syncs())
+    all_removals = sorted(list((rem_gids_set | pending_syncs) - set(gids)))
+
+    # Combined items to sync: (gid, is_removal)
+    sync_items = [(gid, False) for gid in gids] + [(gid, True) for gid in all_removals]
+
+    if not sync_items:
+        meta = prog.get("metadata_json") or {}
+        meta["status"] = "published"
+        meta["published_at"] = now_iso
+        schedule_db.update_schedule(schedule_id, metadata_json=meta)
+        if progress_callback:
+            try:
+                await progress_callback({
+                    "schedule_id": schedule_id,
+                    "schedule_name": prog.get("name", ""),
+                    "current": 0,
+                    "total": 0,
+                    "percent": 100,
+                    "status": "completed",
+                    "success": True,
+                    "successful_count": 0,
+                    "failed_count": 0,
+                    "room_statuses": {},
+                    "published_at": now_iso,
+                })
+            except Exception as p_ex:
+                logger.debug("Error in progress_callback: %s", p_ex)
+
+        return {
+            "schedule_id": schedule_id,
+            "success": True,
+            "total_spaces": 0,
+            "published_spaces": 0,
+            "failed_spaces": 0,
+            "successful_rooms": [],
+            "failed_rooms": [],
+            "published_at": now_iso,
+        }
+
+    successful_gids = set()
+    failed_rooms = []
+    zone_metadata_map = schedule_db.get_all_zone_metadata()
+    total = len(sync_items)
+    room_statuses: Dict[int, str] = {gid: "queued" for gid, _ in sync_items}
+
+    logger.info(
+        f"Publishing schedule '{prog['name']}' to {len(gids)} spaces and wiping/updating {len(all_removals)} removed spaces across seasons {seasons_to_sync}..."
+    )
+    for idx, (gid, is_removal) in enumerate(sync_items):
+        z_meta = zone_metadata_map.get(gid, {})
+        top_name = None
+        if hasattr(client, "topology") and isinstance(client.topology, dict):
+            top_dict = client.topology.get(gid)
+            if isinstance(top_dict, dict):
+                top_name = top_dict.get("name")
+        room_name = z_meta.get("room_name") or top_name or f"Zone {gid}"
+        action_status = "clearing" if is_removal else "flashing"
+        room_statuses[gid] = action_status
+
+        if progress_callback:
+            try:
+                await progress_callback({
+                    "schedule_id": schedule_id,
+                    "schedule_name": prog.get("name", ""),
+                    "current": idx + 1,
+                    "total": total,
+                    "percent": int((idx / total) * 100),
+                    "group_id": gid,
+                    "room_name": room_name,
+                    "is_removal": is_removal,
+                    "status": action_status,
+                    "successful_count": len(successful_gids),
+                    "failed_count": len(failed_rooms),
+                    "room_statuses": dict(room_statuses),
+                })
+            except Exception as p_ex:
+                logger.debug("Error in progress_callback: %s", p_ex)
+
+        room_success = True
+        error_msg = None
+        for s in set(seasons_to_sync):
+            try:
+                await sync_group_hardware(client, gid, season=s)
+                await asyncio.sleep(0.04)
+            except Exception as ex:
+                room_success = False
+                error_msg = str(ex)
+                logger.error(f"Failed publishing group {gid} in season {s}: {ex}")
+                break
+
+        if room_success:
+            successful_gids.add(gid)
+            room_statuses[gid] = "removed" if is_removal else "success"
+            if is_removal:
+                schedule_db.clear_pending_group_sync(gid)
+        else:
+            failed_rooms.append({"group_id": gid, "error": error_msg or "Controller sync failed"})
+            room_statuses[gid] = "failed"
+
+        if progress_callback:
+            try:
+                await progress_callback({
+                    "schedule_id": schedule_id,
+                    "schedule_name": prog.get("name", ""),
+                    "current": idx + 1,
+                    "total": total,
+                    "percent": int(((idx + 1) / total) * 100),
+                    "group_id": gid,
+                    "room_name": room_name,
+                    "is_removal": is_removal,
+                    "status": ("removed" if is_removal else "success") if room_success else "failed",
+                    "error": error_msg,
+                    "successful_count": len(successful_gids),
+                    "failed_count": len(failed_rooms),
+                    "room_statuses": dict(room_statuses),
+                })
+            except Exception as p_ex:
+                logger.debug("Error in progress_callback: %s", p_ex)
+
+    overall_success = (len(failed_rooms) == 0)
+
+    # Persist publication status in metadata
+    meta = prog.get("metadata_json") or {}
+    meta["status"] = "published" if overall_success else "failed"
+    meta["published_at"] = now_iso
+    schedule_db.update_schedule(schedule_id, metadata_json=meta)
+
+    if progress_callback:
+        try:
+            await progress_callback({
+                "schedule_id": schedule_id,
+                "schedule_name": prog.get("name", ""),
+                "current": total,
+                "total": total,
+                "percent": 100,
+                "status": "completed",
+                "success": overall_success,
+                "successful_count": len(successful_gids),
+                "failed_count": len(failed_rooms),
+                "room_statuses": dict(room_statuses),
+                "published_at": now_iso,
+            })
+        except Exception as p_ex:
+            logger.debug("Error in final progress_callback: %s", p_ex)
+
+    return {
+        "schedule_id": schedule_id,
+        "success": overall_success,
+        "total_spaces": total,
+        "published_spaces": len(successful_gids),
+        "failed_spaces": len(failed_rooms),
+        "successful_rooms": sorted(list(successful_gids)),
+        "failed_rooms": failed_rooms,
+        "published_at": now_iso,
+    }
+
+
+async def push_schedule_to_hardware(
+    client: GB50Client,
+    schedule_id: int,
+    removed_group_ids: Optional[List[int]] = None,
+) -> bool:
+    """Push schedule changes to controller hardware EEPROM (legacy wrapper)."""
+    result = await publish_schedule_to_hardware(client, schedule_id, removed_group_ids=removed_group_ids)
+    return result["success"]
 
 
 async def sync_all_groups_hardware(client: GB50Client, season: int = 1) -> Dict[str, Any]:

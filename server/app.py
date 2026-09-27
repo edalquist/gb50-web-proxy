@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -20,12 +20,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 
 
 def create_app(
-    controller_host: str = "192.0.2.90",
+    controller_host: Optional[str] = None,
     controller_port: int = 80,
     poll_interval: float = 3.0,
 ) -> FastAPI:
     """Create and configure the FastAPI proxy application."""
     
+    controller_host = (controller_host or os.getenv("GB50_HOST", "")).strip()
+    if not controller_host:
+        raise ValueError("Configure the controller host explicitly or set GB50_HOST.")
     client = GB50Client(host=controller_host, port=controller_port)
     state_manager = StateManager(client=client, poll_interval_sec=poll_interval)
 

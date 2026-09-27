@@ -1,4 +1,4 @@
-"""Live read-only verification script against Mitsubishi GB-50 at 192.0.2.90."""
+"""Live read-only verification script against Mitsubishi GB-50 at the explicitly configured GB50_HOST."""
 
 import sys
 import os
@@ -12,8 +12,11 @@ from gb50 import GB50Client
 
 
 async def main():
-    print("Connecting to live GB-50 controller at 192.0.2.90...")
-    async with GB50Client(host="192.0.2.90") as client:
+    host = os.getenv("GB50_HOST", "").strip()
+    if not host:
+        raise SystemExit("Set GB50_HOST explicitly before running a live controller audit.")
+    print(f"Connecting to live GB-50 controller at {host}...")
+    async with GB50Client(host=host) as client:
         # 1. System Info
         info = await client.get_system_info()
         print(f"\n[System Info]")

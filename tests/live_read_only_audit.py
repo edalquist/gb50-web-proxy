@@ -1,4 +1,4 @@
-"""Comprehensive Read-Only Verification Script against Mitsubishi GB-50 at 192.0.2.90.
+"""Comprehensive Read-Only Verification Script against Mitsubishi GB-50 at the explicitly configured GB50_HOST.
 
 Strict Safety Constraint: This script strictly issues 'getRequest' packets.
 NO 'setRequest' or mutating packets are generated or sent.
@@ -22,12 +22,15 @@ from gb50.exceptions import GB50Error
 
 
 async def main():
+    host = os.getenv("GB50_HOST", "").strip()
+    if not host:
+        raise SystemExit("Set GB50_HOST explicitly before running a live controller audit.")
     print("=" * 80)
-    print("MITSUBISHI GB-50ADA-A LIVE CONTROLLER READ-ONLY AUDIT (192.0.2.90:80)")
+    print(f"MITSUBISHI GB-50 LIVE CONTROLLER READ-ONLY AUDIT ({host})")
     print(f"Timestamp: {datetime.now().isoformat()}")
     print("=" * 80)
 
-    async with GB50Client(host="192.0.2.90", timeout=15.0) as client:
+    async with GB50Client(host=host, timeout=15.0) as client:
         # 1. System Info & Licenses
         print("\n[1. System Information & Licensed Capabilities]")
         try:
@@ -144,12 +147,12 @@ async def main():
         except Exception as e:
             print(f"  ERROR: {e}")
 
-        # 10. Hardware User Accounts (Read-Only UserAuth check)
-        print("\n[10. Hardware User Accounts (Decrypted)]")
+        # 10. Hardware account counts only; never request or display passwords.
+        print("\n[10. Hardware User Account Counts]")
         try:
             for cat in ("Administrator", "Maintenance", "PublicUser"):
-                users = await client.get_users(category=cat, include_passwords=True)
-                print(f"  Category '{cat}': {users}")
+                users = await client.get_users(category=cat)
+                print(f"  Category '{cat}': {len(users)} account(s)")
         except Exception as e:
             print(f"  ERROR: {e}")
 

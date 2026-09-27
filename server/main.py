@@ -68,8 +68,8 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--controller-host",
-        default=os.environ.get("GB50_HOST", "192.0.2.90"),
-        help="Target GB-50 controller IP address (default: 192.0.2.90)",
+        default=os.environ.get("GB50_HOST"),
+        help="Target controller IP address or hostname (required unless GB50_HOST is set)",
     )
     parser.add_argument(
         "--controller-port",
@@ -84,6 +84,9 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Background controller polling interval in seconds (default: 3.0)",
     )
     parsed = parser.parse_args(args)
+    parsed.controller_host = (parsed.controller_host or "").strip()
+    if not parsed.controller_host:
+        parser.error("set --controller-host or GB50_HOST to your controller address")
 
     if not (1 <= parsed.port <= 65535):
         parser.error(f"argument --port: Port must be between 1 and 65535, got {parsed.port}")

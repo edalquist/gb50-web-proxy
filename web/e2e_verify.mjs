@@ -11,7 +11,8 @@ const rootDir = path.resolve(__dirname, '..');
 const PORT = 8089;
 
 async function runVerification() {
-  const CONTROLLER_HOST = process.env.GB50_HOST || '192.0.2.90';
+  const CONTROLLER_HOST = (process.env.GB50_HOST || '').trim();
+  if (!CONTROLLER_HOST) throw new Error('Set GB50_HOST explicitly before running live verification.');
   const CONTROLLER_PORT = process.env.GB50_PORT || '80';
   console.log(`🚀 Starting server on port ${PORT} targeting ${CONTROLLER_HOST}:${CONTROLLER_PORT}...`);
   

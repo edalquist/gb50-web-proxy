@@ -1,5 +1,7 @@
 # Debian Deployment Guide: Mitsubishi GB-50 REST Proxy, Remote LAN Access & Locked-Down Kiosk UI
 
+The address `192.0.2.90` below is a documentation example. Replace it with your controller address; the application and installer require an explicit address.
+
 This guide covers deploying the Mitsubishi GB-50 API proxy and modern web dashboard as a resilient, self-healing systemd service on **Debian 13 (Trixie)** or **Debian 12 (Bookworm)** (such as a **Dell Wyse 5070**, Intel NUC, or mini PC).
 
 It details two complementary access models running concurrently:
@@ -65,7 +67,7 @@ sudo ./scripts/install.sh \
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--target-dir DIR` | `/opt/gb50-proxy` | Deployment target directory |
-| `--controller-host IP` | `192.0.2.90` | Mitsubishi GB-50 controller IP address |
+| `--controller-host IP` | Required, or set `GB50_HOST` | Mitsubishi GB-50 controller IP address or hostname |
 | `--controller-port PORT` | `80` | Controller HTTP port |
 | `--server-port PORT` | `8080` | Port for the proxy server & web UI |
 | `--poll-interval SECS` | `3.0` | Telemetry polling cadence in seconds |
@@ -223,7 +225,8 @@ SERVER_PORT=8080
 
 # --- Persistent State & Security ---
 GB50_DB_PATH=/var/lib/gb50/gb50_users.db
-GB50_JWT_SECRET=your_secure_random_key_here
+# Leave empty for an ephemeral signing key; the installer generates a persistent key.
+GB50_JWT_SECRET=
 GB50_JWT_EXPIRATION_HOURS=720  # 30 days session lifespan
 
 # --- Kiosk Mode Display Settings ---

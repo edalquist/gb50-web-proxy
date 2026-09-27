@@ -29,7 +29,7 @@ Usage: sudo $0 [OPTIONS]
 Options:
   --target-dir DIR        Destination directory (default: /opt/gb50-proxy)
   --in-place              Install and run service directly from current repository location
-  --controller-host IP    Target Mitsubishi GB-50 controller IP (default: 192.0.2.90)
+  --controller-host IP    Target controller IP or hostname (required unless GB50_HOST is set)
   --controller-port PORT  Target GB-50 HTTP port (default: 80)
   --server-port PORT      HTTP port for proxy & web dashboard (default: 8080)
   --poll-interval SECS    Controller polling rate in seconds (default: 3.0)
@@ -55,7 +55,7 @@ fi
 # --- 3. Default Configuration Variables ---
 TARGET_DIR="/opt/gb50-proxy"
 IN_PLACE=false
-CONTROLLER_HOST="192.0.2.90"
+CONTROLLER_HOST="${GB50_HOST:-}"
 CONTROLLER_PORT="80"
 SERVER_HOST="0.0.0.0"
 SERVER_PORT="8080"
@@ -76,7 +76,7 @@ Usage: sudo $0 [OPTIONS]
 Options:
   --target-dir DIR        Destination directory (default: /opt/gb50-proxy)
   --in-place              Install and run service directly from current repository location
-  --controller-host IP    Target Mitsubishi GB-50 controller IP (default: 192.0.2.90)
+  --controller-host IP    Target controller IP or hostname (required unless GB50_HOST is set)
   --controller-port PORT  Target GB-50 HTTP port (default: 80)
   --server-port PORT      HTTP port for proxy & web dashboard (default: 8080)
   --poll-interval SECS    Controller polling rate in seconds (default: 3.0)
@@ -155,6 +155,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -z "${CONTROLLER_HOST//[[:space:]]/}" ]]; then
+    error "Set --controller-host or GB50_HOST to your controller address."
+    exit 1
+fi
 
 # --- 4. OS Verification ---
 info "Verifying host operating system..."

@@ -38,8 +38,30 @@ DEFAULT_DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gb50_users.db"
 )
 DB_PATH = os.getenv("GB50_DB_PATH", DEFAULT_DB_PATH)
-
 security_bearer = HTTPBearer(auto_error=False)
+
+API_KEY = os.getenv("GB50_API_KEY")
+
+
+def validate_api_key(key: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Validate a raw API key against the configured GB50_API_KEY.
+
+    Returns a synthetic admin user dict if valid, else None.
+    """
+    configured_key = os.getenv("GB50_API_KEY", API_KEY)
+    if not configured_key or not key:
+        return None
+    if hmac.compare_digest(key.strip(), configured_key.strip()):
+        return {
+            "id": 0,
+            "username": "api_client",
+            "role": "admin",
+            "enabled": 1,
+            "token_version": 1,
+            "is_kiosk": 0,
+            "created_at": "system",
+        }
+    return None
 
 
 # --- Cryptographic Utilities ---
@@ -364,9 +386,19 @@ async def get_current_user(
     request: Request,
     bearer: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
 ) -> Dict[str, Any]:
-    """Extract and validate authenticated user from Bearer header or Cookie."""
+    """Extract and validate authenticated user from API Key, Bearer header, or Cookie."""
+    # 1. Check API Key in X-API-Key header or query parameter
+    api_key_header = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    api_user = validate_api_key(api_key_header)
+    if api_user:
+        return api_user
+
+    # 2. Check Bearer token (could also be the API key or a JWT)
     token = None
     if bearer and bearer.credentials:
+        bearer_api_user = validate_api_key(bearer.credentials)
+        if bearer_api_user:
+            return bearer_api_user
         token = bearer.credentials
     elif "gb50_token" in request.cookies:
         token = request.cookies["gb50_token"]
@@ -374,7 +406,7 @@ async def get_current_user(
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated. Please log in.",
+            detail="Not authenticated. Please log in or provide a valid API key.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

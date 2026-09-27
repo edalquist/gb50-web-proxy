@@ -64,6 +64,7 @@ from .auth import (
     get_current_user,
     require_role,
     get_or_create_kiosk_user,
+    validate_api_key,
     LoginRequest,
     ChangePasswordRequest,
     CreateUserRequest,
@@ -1896,28 +1897,39 @@ async def change_controller_user_password(
 async def websocket_endpoint(
     websocket: WebSocket,
     token: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> None:
     """Authenticated WebSocket stream providing real-time group telemetry change events."""
-    # Extract token from query parameter or cookie
-    auth_token = token or websocket.cookies.get("gb50_token")
-    if not auth_token:
-        # Check subprotocols or headers if present
-        auth_header = websocket.headers.get("authorization")
-        if auth_header and auth_header.lower().startswith("bearer "):
-            auth_token = auth_header.split(" ", 1)[1].strip()
+    # Check for API Key first (query parameter, X-API-Key header, or Bearer)
+    candidate_key = api_key or websocket.headers.get("x-api-key")
+    user = validate_api_key(candidate_key)
 
-    payload = decode_access_token(auth_token) if auth_token else None
-    if not payload:
-        logger.warning("Rejecting unauthenticated WebSocket connection attempt from %s", websocket.client)
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
+    if not user:
+        # Extract token from query parameter or cookie
+        auth_token = token or websocket.cookies.get("gb50_token")
+        if not auth_token:
+            # Check subprotocols or headers if present
+            auth_header = websocket.headers.get("authorization")
+            if auth_header and auth_header.lower().startswith("bearer "):
+                auth_token = auth_header.split(" ", 1)[1].strip()
 
-    user_id = int(payload.get("sub", 0))
-    user = user_db.get_user_by_id(user_id)
-    if not user or not user.get("enabled", 1) or payload.get("token_ver") != user.get("token_version", 1):
-        logger.warning("Rejecting invalid/revoked user WebSocket connection attempt: user_id=%s", user_id)
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
+        # Check if auth_token is actually an API key
+        if auth_token:
+            user = validate_api_key(auth_token)
+
+        if not user:
+            payload = decode_access_token(auth_token) if auth_token else None
+            if not payload:
+                logger.warning("Rejecting unauthenticated WebSocket connection attempt from %s", websocket.client)
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+
+            user_id = int(payload.get("sub", 0))
+            user = user_db.get_user_by_id(user_id)
+            if not user or not user.get("enabled", 1) or payload.get("token_ver") != user.get("token_version", 1):
+                logger.warning("Rejecting invalid/revoked user WebSocket connection attempt: user_id=%s", user_id)
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
 
     mgr: StateManager = websocket.app.state.state_manager
     await websocket.accept()

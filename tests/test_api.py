@@ -509,4 +509,61 @@ async def test_kiosk_auto_login():
     os.environ["GB50_KIOSK_AUTO_LOGIN"] = "disabled"
 
 
+@pytest.mark.asyncio
+async def test_api_key_authentication(monkeypatch, mock_system_info, mock_group):
+    """Verify API key authentication for REST endpoints and WebSocket stream."""
+    import os
+    from fastapi.testclient import TestClient
+
+    test_key = "church_gb50_secret_api_key_777"
+    monkeypatch.setenv("GB50_API_KEY", test_key)
+
+    app = create_app(controller_host="192.0.2.90", poll_interval=60.0)
+    app.state.client.get_system_info = AsyncMock(return_value=mock_system_info)
+    app.state.client.get_all_groups = AsyncMock(return_value=[mock_group])
+    app.state.client.get_groups_telemetry = AsyncMock(return_value=[mock_group])
+    app.state.state_manager._system_info = mock_system_info
+    app.state.state_manager._groups_cache = {1: mock_group}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Unauthenticated request fails with 401
+        resp = await client.get("/api/v1/groups")
+        assert resp.status_code == 401
+
+        # 2. Invalid API Key in X-API-Key fails with 401
+        resp = await client.get("/api/v1/groups", headers={"X-API-Key": "invalid_key"})
+        assert resp.status_code == 401
+
+        # 3. Valid API Key in X-API-Key succeeds with 200
+        resp = await client.get("/api/v1/groups", headers={"X-API-Key": test_key})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "FC1-1"
+
+        # 4. Valid API Key in Bearer authorization header succeeds with 200
+        resp = await client.get("/api/v1/system", headers={"Authorization": f"Bearer {test_key}"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "GB-50ADA-A"
+
+        # 5. Valid API Key in query parameter succeeds with 200
+        resp = await client.get(f"/api/v1/groups?api_key={test_key}")
+        assert resp.status_code == 200
+
+    # 6. WebSocket authentication with API key
+    test_client = TestClient(app)
+    # Reject invalid key
+    with pytest.raises(Exception):
+        with test_client.websocket_connect("/api/v1/ws?api_key=wrong_key"):
+            pass
+
+    # Accept valid key
+    with test_client.websocket_connect(f"/api/v1/ws?api_key={test_key}") as ws:
+        msg = ws.receive_json()
+        assert msg["event"] == "initial_state"
+        assert len(msg["groups"]) == 1
+        assert msg["groups"][0]["name"] == "FC1-1"
+
+
 

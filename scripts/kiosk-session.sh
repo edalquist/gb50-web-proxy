@@ -36,24 +36,31 @@ echo "Cursor Mode: ${HIDE_CURSOR}"
 echo "Screensaver: ${SCREENSAVER_MODE} (${SCREENSAVER_TIMEOUT}s timeout)"
 
 # 2. Configure Display Blanking, DPMS & Screensaver Settings
-case "${SCREENSAVER_MODE}" in
-    dpms)
-        xset +dpms
-        xset dpms "${SCREENSAVER_TIMEOUT}" "${SCREENSAVER_TIMEOUT}" "${SCREENSAVER_TIMEOUT}"
-        xset s blank
-        xset s "${SCREENSAVER_TIMEOUT}"
-        ;;
-    blank)
-        xset -dpms
-        xset s blank
-        xset s "${SCREENSAVER_TIMEOUT}"
-        ;;
-    off|*)
-        xset s off
-        xset -dpms
-        xset s noblank
-        ;;
-esac
+# Re-apply after 1s, 5s, and 15s so window manager or browser mapping does not reset xset
+apply_screensaver_settings() {
+    for delay in 1 5 15; do
+        sleep "${delay}"
+        case "${SCREENSAVER_MODE}" in
+            dpms)
+                xset +dpms 2>/dev/null || true
+                xset dpms "${SCREENSAVER_TIMEOUT}" "${SCREENSAVER_TIMEOUT}" "${SCREENSAVER_TIMEOUT}" 2>/dev/null || true
+                xset s blank 2>/dev/null || true
+                xset s "${SCREENSAVER_TIMEOUT}" 2>/dev/null || true
+                ;;
+            blank)
+                xset -dpms 2>/dev/null || true
+                xset s blank 2>/dev/null || true
+                xset s "${SCREENSAVER_TIMEOUT}" 2>/dev/null || true
+                ;;
+            off|*)
+                xset s off 2>/dev/null || true
+                xset -dpms 2>/dev/null || true
+                xset s noblank 2>/dev/null || true
+                ;;
+        esac
+    done
+}
+apply_screensaver_settings &
 
 # 3. Mouse Cursor Management
 # 'never': keep mouse cursor visible at all times (default)

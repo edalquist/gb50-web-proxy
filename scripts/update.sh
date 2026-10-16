@@ -144,24 +144,30 @@ fi
 info "Updating Python dependencies in virtual environment..."
 "${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
 
+if [[ -d "${TARGET_DIR}/python-gb50/.git" && -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
+    info "Pulling latest code for python-gb50..."
+    git config --global --add safe.directory "${TARGET_DIR}/python-gb50" 2>/dev/null || true
+    if ! git -C "${TARGET_DIR}/python-gb50" pull --ff-only 2>/dev/null; then
+        warn "git pull for python-gb50 failed; re-fetching python-gb50 from GitHub..."
+        rm -rf "${TARGET_DIR}/python-gb50"
+    fi
+else
+    rm -rf "${TARGET_DIR}/python-gb50"
+fi
+
 if [[ ! -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
-    info "Installing python-gb50 from GitHub..."
+    info "Fetching latest python-gb50 from GitHub..."
     rm -rf "${TARGET_DIR}/python-gb50"
     mkdir -p "${TARGET_DIR}/python-gb50"
     git clone --depth 1 https://github.com/edalquist/python-gb50.git "${TARGET_DIR}/python-gb50" 2>/dev/null || \
         curl -sSL "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz" | tar -xz -C "${TARGET_DIR}/python-gb50" --strip-components=1 2>/dev/null || true
-elif [[ -d "${TARGET_DIR}/python-gb50/.git" ]]; then
-    info "Pulling latest code for python-gb50..."
-    git config --global --add safe.directory "${TARGET_DIR}/python-gb50" 2>/dev/null || true
-    git -C "${TARGET_DIR}/python-gb50" pull --ff-only 2>/dev/null || true
 fi
 
 if [[ -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
-    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir --force-reinstall --no-deps "${TARGET_DIR}/python-gb50"
+    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}/python-gb50"
 else
-    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir --force-reinstall --no-deps "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz"
+    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz"
 fi
-"${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir --force-reinstall --no-deps "${TARGET_DIR}"
 "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}"
 
 # Reset ownership

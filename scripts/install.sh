@@ -305,7 +305,6 @@ if [[ "${IN_PLACE}" == false && "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; the
         --exclude '__pycache__' \
         --exclude '.pytest_cache' \
         --exclude '*.pyc' \
-        --exclude '.git' \
         --exclude 'python-gb50' \
         "${SOURCE_PROXY_DIR}/" "${TARGET_DIR}/"
 
@@ -317,7 +316,6 @@ if [[ "${IN_PLACE}" == false && "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; the
             --exclude '__pycache__' \
             --exclude '.pytest_cache' \
             --exclude '*.pyc' \
-            --exclude '.git' \
             "${SOURCE_LIB_DIR}/" "${TARGET_DIR}/python-gb50/"
     fi
 fi

@@ -24,7 +24,8 @@ Usage: sudo $0 [OPTIONS]
 
 Options:
   --target-dir DIR   Target installation directory (default: /opt/gb50-proxy)
-  --rebuild-web      Force recompilation of React / Vite frontend
+  --rebuild-web      Recompile React / Vite frontend (enabled by default)
+  --skip-web-build   Skip recompiling the React / Vite frontend
   -h, --help         Show this help message
 EOF
         exit 0
@@ -37,7 +38,8 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 TARGET_DIR="/opt/gb50-proxy"
-REBUILD_WEB=false
+REBUILD_WEB=true
+PROXY_REPO_URL="https://github.com/edalquist/gb50-web-proxy.git"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -47,6 +49,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --rebuild-web)
             REBUILD_WEB=true
+            shift
+            ;;
+        --skip-web-build)
+            REBUILD_WEB=false
             shift
             ;;
         *)
@@ -61,16 +67,57 @@ if [[ ! -d "${TARGET_DIR}" || ! -d "${TARGET_DIR}/.venv" ]]; then
     exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_PROXY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 info "Stopping gb50-proxy service..."
 systemctl stop gb50-proxy.service || true
 
-# If git repository is present, pull latest commits
-if [[ -d "${TARGET_DIR}/.git" ]]; then
-    info "Pulling latest code updates via git..."
+# 1. Update gb50-web-proxy application source
+UPDATED_SOURCE=false
+if [[ -d "${SOURCE_PROXY_DIR}/.git" && -f "${SOURCE_PROXY_DIR}/server/main.py" ]]; then
+    info "Pulling latest code updates in ${SOURCE_PROXY_DIR} via git..."
+    git config --global --add safe.directory "${SOURCE_PROXY_DIR}" 2>/dev/null || true
+    git -C "${SOURCE_PROXY_DIR}" pull --ff-only || warn "git pull failed or had merge conflicts. Continuing with local files."
+    if [[ "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; then
+        info "Synchronizing updated files from ${SOURCE_PROXY_DIR} to ${TARGET_DIR}..."
+        rsync -a --delete \
+            --exclude '.venv' \
+            --exclude 'node_modules' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude '*.pyc' \
+            --exclude 'python-gb50' \
+            "${SOURCE_PROXY_DIR}/" "${TARGET_DIR}/"
+    fi
+    UPDATED_SOURCE=true
+elif [[ -d "${TARGET_DIR}/.git" ]]; then
+    info "Pulling latest code updates in ${TARGET_DIR} via git..."
+    git config --global --add safe.directory "${TARGET_DIR}" 2>/dev/null || true
     git -C "${TARGET_DIR}" pull --ff-only || warn "git pull failed or had merge conflicts. Continuing with local files."
+    UPDATED_SOURCE=true
 fi
 
-# Rebuild frontend if requested or if package.json is newer than dist/index.html
+if [[ "${UPDATED_SOURCE}" == false ]]; then
+    info "Fetching latest gb50-web-proxy source from ${PROXY_REPO_URL}..."
+    TMP_PROXY_DIR="$(mktemp -d)"
+    if git clone --depth 1 "${PROXY_REPO_URL}" "${TMP_PROXY_DIR}" 2>/dev/null; then
+        rsync -a --delete \
+            --exclude '.venv' \
+            --exclude 'node_modules' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude '*.pyc' \
+            --exclude 'python-gb50' \
+            "${TMP_PROXY_DIR}/" "${TARGET_DIR}/"
+        info "Synchronized latest gb50-web-proxy code into ${TARGET_DIR}."
+    else
+        warn "Could not clone ${PROXY_REPO_URL}; continuing with existing files in ${TARGET_DIR}."
+    fi
+    rm -rf "${TMP_PROXY_DIR}"
+fi
+
+# 2. Rebuild frontend web UI (enabled by default)
 if [[ "${REBUILD_WEB}" == true || ! -f "${TARGET_DIR}/web/dist/index.html" ]]; then
     if command -v npm >/dev/null 2>&1 && [[ -d "${TARGET_DIR}/web" ]]; then
         info "Rebuilding web dashboard..."
@@ -78,10 +125,12 @@ if [[ "${REBUILD_WEB}" == true || ! -f "${TARGET_DIR}/web/dist/index.html" ]]; t
         npm install --no-audit --no-fund
         npm run build
         popd >/dev/null
+    else
+        warn "npm not found or ${TARGET_DIR}/web missing; skipping web dashboard build."
     fi
 fi
 
-# Update Python dependencies
+# 3. Update Python dependencies
 info "Updating Python dependencies in virtual environment..."
 "${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
 
@@ -100,8 +149,9 @@ fi
 if [[ -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
     "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir --force-reinstall --no-deps "${TARGET_DIR}/python-gb50"
 else
-    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz"
+    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir --force-reinstall --no-deps "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz"
 fi
+"${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir --force-reinstall --no-deps "${TARGET_DIR}"
 "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}"
 
 # Reset ownership

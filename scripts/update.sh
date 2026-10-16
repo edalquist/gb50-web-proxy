@@ -40,6 +40,8 @@ fi
 TARGET_DIR="/opt/gb50-proxy"
 REBUILD_WEB=true
 PROXY_REPO_URL="https://github.com/edalquist/gb50-web-proxy.git"
+LIB_REPO_URL="https://github.com/edalquist/python-gb50.git"
+ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -75,54 +77,92 @@ else
     SOURCE_PROXY_DIR=""
 fi
 
+# 1. Update gb50-web-proxy application source first and re-exec if script changed
+if [[ -z "${GB50_UPDATE_REEXEC:-}" ]]; then
+    UPDATED_SOURCE=false
+    if [[ -n "${SOURCE_PROXY_DIR}" && -d "${SOURCE_PROXY_DIR}/.git" && -f "${SOURCE_PROXY_DIR}/server/main.py" ]]; then
+        info "Fetching latest gb50-web-proxy updates in ${SOURCE_PROXY_DIR}..."
+        git config --global --add safe.directory "${SOURCE_PROXY_DIR}" 2>/dev/null || true
+        if git -C "${SOURCE_PROXY_DIR}" fetch "${PROXY_REPO_URL}" main && git -C "${SOURCE_PROXY_DIR}" reset --hard FETCH_HEAD; then
+            if [[ "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; then
+                info "Synchronizing updated files from ${SOURCE_PROXY_DIR} to ${TARGET_DIR}..."
+                rsync -a --delete \
+                    --exclude '.venv' \
+                    --exclude 'node_modules' \
+                    --exclude '__pycache__' \
+                    --exclude '.pytest_cache' \
+                    --exclude '*.pyc' \
+                    --exclude 'python-gb50' \
+                    "${SOURCE_PROXY_DIR}/" "${TARGET_DIR}/"
+            fi
+            UPDATED_SOURCE=true
+        else
+            warn "git fetch in ${SOURCE_PROXY_DIR} failed; falling back to direct GitHub fetch."
+        fi
+    elif [[ -d "${TARGET_DIR}/.git" ]]; then
+        info "Fetching latest gb50-web-proxy updates in ${TARGET_DIR}..."
+        git config --global --add safe.directory "${TARGET_DIR}" 2>/dev/null || true
+        if git -C "${TARGET_DIR}" fetch "${PROXY_REPO_URL}" main && git -C "${TARGET_DIR}" reset --hard FETCH_HEAD; then
+            UPDATED_SOURCE=true
+        else
+            warn "git fetch in ${TARGET_DIR} failed; falling back to fresh clone."
+        fi
+    fi
+
+    if [[ "${UPDATED_SOURCE}" == false ]]; then
+        info "Fetching latest gb50-web-proxy source from ${PROXY_REPO_URL}..."
+        TMP_PROXY_DIR="$(mktemp -d)"
+        if git clone --depth 1 "${PROXY_REPO_URL}" "${TMP_PROXY_DIR}"; then
+            rsync -a --delete \
+                --exclude '.venv' \
+                --exclude 'node_modules' \
+                --exclude '__pycache__' \
+                --exclude '.pytest_cache' \
+                --exclude '*.pyc' \
+                --exclude 'python-gb50' \
+                "${TMP_PROXY_DIR}/" "${TARGET_DIR}/"
+            info "Synchronized latest gb50-web-proxy code into ${TARGET_DIR}."
+        else
+            warn "Could not clone ${PROXY_REPO_URL}; continuing with existing files in ${TARGET_DIR}."
+        fi
+        rm -rf "${TMP_PROXY_DIR}"
+    fi
+
+    chmod +x "${TARGET_DIR}/scripts/"*.sh 2>/dev/null || true
+    export GB50_UPDATE_REEXEC=1
+    exec "${TARGET_DIR}/scripts/update.sh" "${ORIG_ARGS[@]}"
+fi
+
 info "Stopping gb50-proxy service..."
 systemctl stop gb50-proxy.service || true
 
-# 1. Update gb50-web-proxy application source
-UPDATED_SOURCE=false
-if [[ -n "${SOURCE_PROXY_DIR}" && -d "${SOURCE_PROXY_DIR}/.git" && -f "${SOURCE_PROXY_DIR}/server/main.py" ]]; then
-    info "Pulling latest code updates in ${SOURCE_PROXY_DIR} via git..."
-    git config --global --add safe.directory "${SOURCE_PROXY_DIR}" 2>/dev/null || true
-    git -C "${SOURCE_PROXY_DIR}" pull --ff-only || warn "git pull failed or had merge conflicts. Continuing with local files."
-    if [[ "${SOURCE_PROXY_DIR}" != "${TARGET_DIR}" ]]; then
-        info "Synchronizing updated files from ${SOURCE_PROXY_DIR} to ${TARGET_DIR}..."
-        rsync -a --delete \
-            --exclude '.venv' \
-            --exclude 'node_modules' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude '*.pyc' \
-            --exclude 'python-gb50' \
-            "${SOURCE_PROXY_DIR}/" "${TARGET_DIR}/"
+# 2. Pull and update python-gb50 library FIRST
+info "Updating python-gb50 driver library..."
+if [[ -d "${TARGET_DIR}/python-gb50/.git" && -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
+    git config --global --add safe.directory "${TARGET_DIR}/python-gb50" 2>/dev/null || true
+    if ! (git -C "${TARGET_DIR}/python-gb50" fetch "${LIB_REPO_URL}" main && git -C "${TARGET_DIR}/python-gb50" reset --hard FETCH_HEAD); then
+        warn "git fetch for python-gb50 failed; re-cloning python-gb50 from GitHub..."
+        rm -rf "${TARGET_DIR}/python-gb50"
     fi
-    UPDATED_SOURCE=true
-elif [[ -d "${TARGET_DIR}/.git" ]]; then
-    info "Pulling latest code updates in ${TARGET_DIR} via git..."
-    git config --global --add safe.directory "${TARGET_DIR}" 2>/dev/null || true
-    git -C "${TARGET_DIR}" pull --ff-only || warn "git pull failed or had merge conflicts. Continuing with local files."
-    UPDATED_SOURCE=true
+else
+    rm -rf "${TARGET_DIR}/python-gb50"
 fi
 
-if [[ "${UPDATED_SOURCE}" == false ]]; then
-    info "Fetching latest gb50-web-proxy source from ${PROXY_REPO_URL}..."
-    TMP_PROXY_DIR="$(mktemp -d)"
-    if git clone --depth 1 "${PROXY_REPO_URL}" "${TMP_PROXY_DIR}" 2>/dev/null; then
-        rsync -a --delete \
-            --exclude '.venv' \
-            --exclude 'node_modules' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude '*.pyc' \
-            --exclude 'python-gb50' \
-            "${TMP_PROXY_DIR}/" "${TARGET_DIR}/"
-        info "Synchronized latest gb50-web-proxy code into ${TARGET_DIR}."
-    else
-        warn "Could not clone ${PROXY_REPO_URL}; continuing with existing files in ${TARGET_DIR}."
-    fi
-    rm -rf "${TMP_PROXY_DIR}"
+if [[ ! -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
+    info "Cloning latest python-gb50 from ${LIB_REPO_URL}..."
+    rm -rf "${TARGET_DIR}/python-gb50"
+    mkdir -p "${TARGET_DIR}/python-gb50"
+    git clone --depth 1 "${LIB_REPO_URL}" "${TARGET_DIR}/python-gb50" || \
+        curl -sSL "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz" | tar -xz -C "${TARGET_DIR}/python-gb50" --strip-components=1
 fi
 
-# 2. Rebuild frontend web UI (enabled by default)
+# 3. Install Python packages (python-gb50 first, then gb50-web-proxy)
+info "Updating Python packages in virtual environment..."
+"${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
+"${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}/python-gb50"
+"${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}/python-gb50" "${TARGET_DIR}"
+
+# 4. Rebuild frontend web UI (enabled by default)
 if [[ "${REBUILD_WEB}" == true || ! -f "${TARGET_DIR}/web/dist/index.html" ]]; then
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         info "Installing Node.js and npm for web dashboard compilation..."
@@ -139,36 +179,6 @@ if [[ "${REBUILD_WEB}" == true || ! -f "${TARGET_DIR}/web/dist/index.html" ]]; t
         warn "npm not found or ${TARGET_DIR}/web missing; skipping web dashboard build."
     fi
 fi
-
-# 3. Update Python dependencies
-info "Updating Python dependencies in virtual environment..."
-"${TARGET_DIR}/.venv/bin/pip" install --upgrade pip setuptools wheel
-
-if [[ -d "${TARGET_DIR}/python-gb50/.git" && -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
-    info "Pulling latest code for python-gb50..."
-    git config --global --add safe.directory "${TARGET_DIR}/python-gb50" 2>/dev/null || true
-    if ! git -C "${TARGET_DIR}/python-gb50" pull --ff-only 2>/dev/null; then
-        warn "git pull for python-gb50 failed; re-fetching python-gb50 from GitHub..."
-        rm -rf "${TARGET_DIR}/python-gb50"
-    fi
-else
-    rm -rf "${TARGET_DIR}/python-gb50"
-fi
-
-if [[ ! -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
-    info "Fetching latest python-gb50 from GitHub..."
-    rm -rf "${TARGET_DIR}/python-gb50"
-    mkdir -p "${TARGET_DIR}/python-gb50"
-    git clone --depth 1 https://github.com/edalquist/python-gb50.git "${TARGET_DIR}/python-gb50" 2>/dev/null || \
-        curl -sSL "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz" | tar -xz -C "${TARGET_DIR}/python-gb50" --strip-components=1 2>/dev/null || true
-fi
-
-if [[ -f "${TARGET_DIR}/python-gb50/gb50/__init__.py" ]]; then
-    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}/python-gb50"
-else
-    "${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "https://github.com/edalquist/python-gb50/archive/refs/heads/main.tar.gz"
-fi
-"${TARGET_DIR}/.venv/bin/pip" install --no-cache-dir "${TARGET_DIR}"
 
 # Reset ownership
 chown -R gb50:gb50 "${TARGET_DIR}"

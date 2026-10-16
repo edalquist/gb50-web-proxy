@@ -98,7 +98,10 @@ def create_app(
                 return FileResponse(file_path)
             index_path = os.path.join(dist_dir, "index.html")
             if os.path.isfile(index_path):
-                return FileResponse(index_path)
+                return FileResponse(
+                    index_path,
+                    headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+                )
         return {"message": "GB-50 REST API is running. Web UI not built yet (build 'web' directory with npm run build)."}
 
     return app

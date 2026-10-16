@@ -193,6 +193,7 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         app.state.client.set_group_topology = AsyncMock(return_value=True)
         app.state.client.delete_group = AsyncMock(return_value=True)
         app.state.client.set_system_info = AsyncMock(return_value=True)
+        app.state.client.reset_controller = AsyncMock(return_value=True)
         app.state.client.register_option = AsyncMock(return_value=True)
 
         # Admin updating system info (exercises mgr.refresh_system_info)
@@ -203,6 +204,15 @@ async def test_rest_api_endpoints_and_rbac(mock_system_info, mock_group):
         )
         assert put_sys_resp.status_code == 200
         assert put_sys_resp.json()["status"] == "success"
+
+        # Staff cannot reset controller; Admin can reset controller
+        s_reset_resp = await client.post("/api/v1/system/reset", headers=staff_headers)
+        assert s_reset_resp.status_code == 403
+
+        reset_sys_resp = await client.post("/api/v1/system/reset", headers=admin_headers)
+        assert reset_sys_resp.status_code == 200
+        assert reset_sys_resp.json()["status"] == "success"
+        app.state.client.reset_controller.assert_awaited_once()
 
         # Admin registering option license (exercises mgr.refresh_system_info)
         opt_resp = await client.post(

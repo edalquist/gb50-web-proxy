@@ -177,6 +177,17 @@ export async function updateSystemInfo(settings: Record<string, any>): Promise<{
   return res.json();
 }
 
+export async function resetController(): Promise<{ status: string; message: string }> {
+  const res = await authFetch(`${API_BASE}/system/reset`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to reset controller: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function fetchGroups(): Promise<GroupStatus[]> {
   const res = await authFetch(`${API_BASE}/groups`);
   if (!res.ok) throw new Error(`Failed to fetch groups: ${res.statusText}`);

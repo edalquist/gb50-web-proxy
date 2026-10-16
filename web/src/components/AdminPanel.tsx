@@ -47,6 +47,7 @@ import {
   deleteGroup,
   fetchUnassignedAddresses,
   updateSystemInfo,
+  resetController,
   fetchInterlocks,
   updateInterlocks,
   fetchSummerTime,
@@ -118,6 +119,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   });
   const [sysMsg, setSysMsg] = useState<string | null>(null);
   const [isSavingSys, setIsSavingSys] = useState(false);
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [isResettingController, setIsResettingController] = useState(false);
 
   useEffect(() => {
     if (systemInfo) {
@@ -140,14 +143,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     e.preventDefault();
     setIsSavingSys(true);
     setSysMsg(null);
+    const netChanged =
+      systemInfo &&
+      (sysForm.ip_address !== systemInfo.ip_address ||
+        sysForm.subnet_mask !== systemInfo.subnet_mask ||
+        sysForm.gateway !== systemInfo.gateway ||
+        sysForm.mnet_address !== systemInfo.mnet_address);
     try {
       const res = await updateSystemInfo(sysForm);
-      setSysMsg(res.message);
+      setSysMsg(
+        netChanged
+          ? `${res.message}. Reset the controller below for network/M-Net changes to take effect.`
+          : res.message
+      );
       await onRefreshGroups();
     } catch (err: any) {
       setSysMsg(`Error: ${err.message}`);
     } finally {
       setIsSavingSys(false);
+    }
+  };
+
+  const handleResetController = async () => {
+    setIsResettingController(true);
+    setSysMsg(null);
+    try {
+      const res = await resetController();
+      setSysMsg(res.message);
+      setIsResetModalOpen(false);
+    } catch (err: any) {
+      setSysMsg(`Error: ${err.message}`);
+    } finally {
+      setIsResettingController(false);
     }
   };
 
@@ -833,23 +860,64 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </div>
 
-            {/* Save Button & Feedback */}
-            <div className="flex items-center justify-between pt-4 border-t border-slate-800">
+            {/* Save & Reset Buttons & Feedback */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4 border-t border-slate-800">
               {sysMsg ? (
-                <div className="text-xs font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-3 py-2 rounded-xl">
+                <div className={`text-xs font-semibold px-3 py-2 rounded-xl border ${
+                  sysMsg.startsWith('Error:')
+                    ? 'text-rose-300 bg-rose-500/10 border-rose-500/30'
+                    : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+                }`}>
                   {sysMsg}
                 </div>
-              ) : <div />}
-              <button
-                type="submit"
-                disabled={isSavingSys}
-                className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-900 transition disabled:opacity-50"
-              >
-                <Save className="w-4 h-4" />
-                {isSavingSys ? 'Saving...' : 'Save System Configuration to Controller'}
-              </button>
+              ) : (
+                <div className="text-[11px] text-slate-400">
+                  Network (IP, Subnet, Gateway) and M-Net address changes require a controller reset after saving.
+                </div>
+              )}
+              <div className="flex items-center gap-3 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsResetModalOpen(true)}
+                  disabled={isResettingController || isSavingSys}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-rose-900/60 hover:bg-rose-800 text-rose-200 border border-rose-500/30 text-xs font-bold rounded-xl transition disabled:opacity-50 cursor-pointer"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isResettingController ? 'animate-spin' : ''}`} />
+                  {isResettingController ? 'Resetting...' : 'Reset Controller'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingSys}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-900 transition disabled:opacity-50 cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  {isSavingSys ? 'Saving...' : 'Save System Configuration to Controller'}
+                </button>
+              </div>
             </div>
           </form>
+
+          {/* 2-Step Reset Controller Confirmation Modal */}
+          <DestructiveConfirmModal
+            isOpen={isResetModalOpen}
+            title="Reset & Reboot GB-50 Controller?"
+            itemName="RESET"
+            confirmButtonText="Reboot GB-50 Controller"
+            confirmInputPlaceholder="Type RESET to confirm"
+            isLoading={isResettingController}
+            description={
+              <>
+                <p>
+                  This sends <code className="text-rose-300 font-mono">&lt;SystemData Operation="RESET" /&gt;</code> to reboot the physical Mitsubishi GB-50 controller so staged network (IP, Subnet Mask, Gateway) and M-Net changes take effect.
+                </p>
+                <p className="text-amber-400 font-medium pt-1">
+                  The controller will be unreachable for approximately 1–2 minutes while restarting. If you changed its IP address, remember to update <code className="font-mono">GB50_HOST</code> in <code className="font-mono">/etc/default/gb50-proxy</code> and restart <code className="font-mono">gb50-proxy</code>.
+                </p>
+              </>
+            }
+            onConfirm={handleResetController}
+            onClose={() => setIsResetModalOpen(false)}
+          />
         </div>
       )}
 

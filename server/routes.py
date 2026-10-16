@@ -580,6 +580,27 @@ async def update_system_info(
         raise HTTPException(status_code=500, detail=str(ex))
 
 
+@router.post("/system/reset", summary="Reboot / Reset GB-50 Controller")
+async def reset_controller_route(
+    mgr: StateManager = Depends(get_state_mgr),
+    _admin: Dict[str, Any] = Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Send Operation=RESET to reboot the GB-50 controller (applies staged IP, subnet, gateway, and M-Net settings)."""
+    try:
+        if hasattr(mgr.client, "reset_controller"):
+            await mgr.client.reset_controller()
+        else:
+            from gb50.protocol import wrap_packet
+            await mgr.client._send_xml(wrap_packet("setRequest", '    <SystemData Operation="RESET" />\r\n'))
+        return {
+            "status": "success",
+            "message": "Controller reset initiated. The GB-50 will take approximately 1–2 minutes to reboot.",
+        }
+    except Exception as ex:
+        logger.exception("Error in POST /api/v1/system/reset: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
 def _enrich_group_metadata(group: GroupStatus, metadata_map: Dict[int, Dict[str, str]]) -> GroupStatus:
     meta = metadata_map.get(group.group_id)
     if meta and meta.get("room_name"):

@@ -16,7 +16,32 @@ from gb50.state_manager import StateManager
 from .routes import router, get_state_mgr
 from .schedule_db import schedule_db
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+_LOG_LEVEL_MAP = {
+    "critical": logging.CRITICAL,
+    "error": logging.ERROR,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+    "trace": logging.DEBUG,
+}
+
+
+def configure_logging(level_name: Optional[str] = None) -> str:
+    """Configure root and gb50 loggers and return the normalized Uvicorn log level."""
+    raw = (level_name or os.getenv("GB50_LOG_LEVEL") or os.getenv("LOG_LEVEL") or "info").strip().lower()
+    numeric_level = _LOG_LEVEL_MAP.get(raw, logging.INFO)
+    uvicorn_level = "warning" if raw == "warn" else (raw if raw in _LOG_LEVEL_MAP else "info")
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logging.getLogger().setLevel(numeric_level)
+    logging.getLogger("gb50").setLevel(numeric_level)
+    return uvicorn_level
+
+
+configure_logging()
 
 
 def create_app(

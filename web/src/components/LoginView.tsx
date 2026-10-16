@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Building2, Lock, User, ShieldAlert, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { Building2, Lock, User, ShieldAlert, ArrowRight } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 
 interface LoginViewProps {
@@ -23,21 +23,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
     setLoading(true);
     try {
       await login(username.trim(), password);
-      onSuccess?.();
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleQuickLogin = async (u: string, p: string) => {
-    setUsername(u);
-    setPassword(p);
-    setError(null);
-    setLoading(true);
-    try {
-      await login(u, p);
       onSuccess?.();
     } catch (err: any) {
       setError(err.message || 'Authentication failed.');
@@ -120,38 +105,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess }) => {
             )}
           </button>
         </form>
-
-        {/* Quick Access Helper */}
-        <div className="pt-4 border-t border-slate-800 text-center space-y-3">
-          <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">
-            Default Access Accounts
-          </span>
-          <div className="grid grid-cols-2 gap-2 text-left">
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('admin', 'admin')}
-              className="p-2.5 bg-slate-950/80 hover:bg-slate-800 border border-slate-800 rounded-xl transition group text-xs"
-            >
-              <div className="flex items-center gap-1.5 text-blue-400 font-bold">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Administrator</span>
-              </div>
-              <span className="text-[11px] text-slate-400 block mt-0.5 font-mono">admin / admin</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('staff', 'staff123')}
-              className="p-2.5 bg-slate-950/80 hover:bg-slate-800 border border-slate-800 rounded-xl transition group text-xs"
-            >
-              <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Operator</span>
-              </div>
-              <span className="text-[11px] text-slate-400 block mt-0.5 font-mono">staff / staff123</span>
-            </button>
-          </div>
-        </div>
 
         {/* Role Matrix Note */}
         <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/80 text-[11px] text-slate-500 text-center">

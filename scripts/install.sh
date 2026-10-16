@@ -431,6 +431,7 @@ GB50_POLL_INTERVAL=${POLL_INTERVAL}
 # --- Web Proxy Server ---
 SERVER_HOST=${SERVER_HOST}
 SERVER_PORT=${SERVER_PORT}
+GB50_LOG_LEVEL=info
 
 # --- Persistence ---
 GB50_DB_PATH=/var/lib/gb50/gb50_users.db

@@ -222,6 +222,7 @@ GB50_POLL_INTERVAL=3.0
 # --- Web Server Network Bindings ---
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8080
+GB50_LOG_LEVEL=info  # Set to "debug" for verbose HTTP/XML protocol logging
 
 # --- Persistent State & Security ---
 GB50_DB_PATH=/var/lib/gb50/gb50_users.db

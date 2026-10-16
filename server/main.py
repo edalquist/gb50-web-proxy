@@ -19,7 +19,9 @@ for candidate in (
         sys.path.insert(0, candidate)
 
 import uvicorn
-from server.app import create_app
+from server.app import configure_logging, create_app
+
+VALID_LOG_LEVELS = ("critical", "error", "warning", "warn", "info", "debug", "trace")
 
 
 def _parse_env_port(env_name: str, default: int, parser: argparse.ArgumentParser) -> int:
@@ -48,12 +50,27 @@ def _parse_env_float(env_name: str, default: float, parser: argparse.ArgumentPar
     return fval
 
 
+def _parse_env_log_level(default: str, parser: argparse.ArgumentParser) -> str:
+    for env_name in ("GB50_LOG_LEVEL", "LOG_LEVEL"):
+        val = os.environ.get(env_name)
+        if val is not None and val.strip() != "":
+            normalized = val.strip().lower()
+            if normalized not in VALID_LOG_LEVELS:
+                parser.error(
+                    f"invalid log level for environment variable {env_name}: {val!r} "
+                    f"(choose from {', '.join(VALID_LOG_LEVELS)})"
+                )
+            return "warning" if normalized == "warn" else normalized
+    return default
+
+
 def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Mitsubishi GB-50 HVAC REST & WebSocket Proxy Server")
 
     server_port_default = _parse_env_port("SERVER_PORT", 8080, parser)
     controller_port_default = _parse_env_port("GB50_PORT", 80, parser)
     poll_interval_default = _parse_env_float("GB50_POLL_INTERVAL", 3.0, parser)
+    log_level_default = _parse_env_log_level("info", parser)
 
     parser.add_argument(
         "--host",
@@ -83,6 +100,13 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         default=poll_interval_default,
         help="Background controller polling interval in seconds (default: 3.0)",
     )
+    parser.add_argument(
+        "--log-level",
+        default=log_level_default,
+        type=lambda s: "warning" if s.strip().lower() == "warn" else s.strip().lower(),
+        choices=["critical", "error", "warning", "info", "debug", "trace"],
+        help="Server and GB-50 client log level (default: info, or GB50_LOG_LEVEL / LOG_LEVEL)",
+    )
     parsed = parser.parse_args(args)
     parsed.controller_host = (parsed.controller_host or "").strip()
     if not parsed.controller_host:
@@ -100,6 +124,7 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    uvicorn_log_level = configure_logging(args.log_level)
     app = create_app(
         controller_host=args.controller_host,
         controller_port=args.controller_port,
@@ -109,9 +134,10 @@ def main() -> None:
         app,
         host=args.host,
         port=args.port,
-        log_level="info",
+        log_level=uvicorn_log_level,
     )
 
 
 if __name__ == "__main__":
     main()
+

@@ -29,3 +29,22 @@ def test_explicit_host_overrides_environment(monkeypatch):
     with patch("server.app.GB50Client") as client:
         create_app(controller_host="controller.example")
         client.assert_called_once_with(host="controller.example", port=80)
+
+
+def test_log_level_configuration(monkeypatch):
+    import logging
+    from server.app import configure_logging
+
+    monkeypatch.setenv("GB50_HOST", "controller.example")
+    monkeypatch.delenv("GB50_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    assert parse_args([]).log_level == "info"
+
+    monkeypatch.setenv("GB50_LOG_LEVEL", "DEBUG")
+    assert parse_args([]).log_level == "debug"
+    assert parse_args(["--log-level", "WARNING"]).log_level == "warning"
+
+    assert configure_logging("debug") == "debug"
+    assert logging.getLogger("gb50").level == logging.DEBUG
+    assert configure_logging("info") == "info"
+    assert logging.getLogger("gb50").level == logging.INFO

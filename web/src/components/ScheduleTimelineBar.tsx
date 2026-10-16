@@ -71,7 +71,7 @@ export const ScheduleTimelineBar: React.FC<ScheduleTimelineBarProps> = ({
         : '12:00 AM';
 
       const isOff = ev.drive === 'OFF';
-      const resolvedTempF = ev.set_temp_f ?? (ev.set_temp_c ? Math.round((ev.set_temp_c * 9 / 5) + 32) : 70);
+      const resolvedTempF = ev.set_temp_f != null ? Math.round(ev.set_temp_f * 2) / 2 : (ev.set_temp_c ? Math.round(((ev.set_temp_c * 9 / 5) + 32) * 2) / 2 : 70);
       const resolvedTempC = ev.set_temp_c ?? (ev.set_temp_f ? Math.round(((ev.set_temp_f - 32) * 5 / 9) * 2) / 2 : 21);
 
       result.push({

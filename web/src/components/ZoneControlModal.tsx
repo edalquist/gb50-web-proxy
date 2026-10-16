@@ -111,7 +111,10 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
 
   const [drive, setDrive] = useState<DriveState>(group.drive);
   const [mode, setMode] = useState<OperationMode>(group.mode);
-  const [setTempF, setSetTempF] = useState<number>(group.set_temp_f || 70.0);
+  const [setTempF, setSetTempF] = useState<number>(() => {
+    const rawF = group.set_temp_f ?? (group.set_temp_c ? (group.set_temp_c * 9 / 5 + 32) : 70.0);
+    return Math.round(rawF * 2) / 2;
+  });
   const [setTempC, setSetTempC] = useState<number>(group.set_temp_c || 21.0);
   const [fanSpeed, setFanSpeed] = useState<FanSpeed>(group.fan_speed);
   const [airDir, setAirDir] = useState<AirDirection>(group.air_direction);
@@ -124,7 +127,8 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
   useEffect(() => {
     setDrive(group.drive);
     setMode(group.mode);
-    setSetTempF(group.set_temp_f || 70.0);
+    const rawF = group.set_temp_f ?? (group.set_temp_c ? (group.set_temp_c * 9 / 5 + 32) : 70.0);
+    setSetTempF(Math.round(rawF * 2) / 2);
     setSetTempC(group.set_temp_c || 21.0);
     setFanSpeed(group.fan_speed);
     setAirDir(group.air_direction);
@@ -140,7 +144,7 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
     } else {
       const nextC = Math.min(30, Math.max(17, Math.round((setTempC + delta * 0.5) * 2) / 2));
       setSetTempC(nextC);
-      setSetTempF(Math.round(((nextC * 9 / 5) + 32) * 10) / 10);
+      setSetTempF(Math.round(((nextC * 9 / 5) + 32) * 2) / 2);
     }
   };
 
@@ -280,11 +284,11 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
 
                 <div className="text-center">
                   <div className="text-4xl font-extrabold text-blue-400 tracking-tight">
-                    {tempUnit === 'F' ? setTempF : setTempC}
+                    {tempUnit === 'F' ? Math.round(setTempF * 2) / 2 : setTempC}
                     <span className="text-lg font-normal text-slate-400 ml-1">°{tempUnit}</span>
                   </div>
                   <span className="text-xs text-slate-500">
-                    {tempUnit === 'F' ? `${setTempC}°C` : `${setTempF}°F`} equivalent
+                    {tempUnit === 'F' ? `${setTempC}°C` : `${Math.round(setTempF * 2) / 2}°F`} equivalent
                   </span>
                 </div>
 

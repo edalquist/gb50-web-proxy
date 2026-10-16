@@ -81,7 +81,7 @@ export const BulkEditModal: React.FC<BulkEditModalProps> = ({
     } else {
       const nextC = Math.min(30, Math.max(17, Math.round((setTempC + delta * 0.5) * 2) / 2));
       setSetTempC(nextC);
-      setSetTempF(Math.round(((nextC * 9 / 5) + 32) * 10) / 10);
+      setSetTempF(Math.round(((nextC * 9 / 5) + 32) * 2) / 2);
     }
   };
 
@@ -270,11 +270,11 @@ export const BulkEditModal: React.FC<BulkEditModalProps> = ({
 
                   <div className="text-center">
                     <div className="text-3xl font-extrabold text-blue-400 tracking-tight">
-                      {tempUnit === 'F' ? setTempF : setTempC}
+                      {tempUnit === 'F' ? Math.round(setTempF * 2) / 2 : setTempC}
                       <span className="text-base font-normal text-slate-400 ml-1">°{tempUnit}</span>
                     </div>
                     <span className="text-xs text-slate-500">
-                      {tempUnit === 'F' ? `${setTempC}°C` : `${setTempF}°F`} equivalent
+                      {tempUnit === 'F' ? `${setTempC}°C` : `${Math.round(setTempF * 2) / 2}°F`} equivalent
                     </span>
                   </div>
 

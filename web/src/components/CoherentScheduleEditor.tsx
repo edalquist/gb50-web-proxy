@@ -115,7 +115,7 @@ export const CoherentScheduleEditor: React.FC<CoherentScheduleEditorProps> = ({
             minute: Number(e.minute || 0),
             drive: (e.drive || 'ON') as 'ON' | 'OFF',
             mode: (e.mode || 'AUTO') as OperationMode,
-            set_temp_f: e.set_temp_f ?? (e.set_temp_c ? Math.round((e.set_temp_c * 9 / 5) + 32) : 70),
+            set_temp_f: e.set_temp_f != null ? Math.round(e.set_temp_f * 2) / 2 : (e.set_temp_c ? Math.round(((e.set_temp_c * 9 / 5) + 32) * 2) / 2 : 70),
             set_temp_c: e.set_temp_c ?? (e.set_temp_f ? Math.round(((e.set_temp_f - 32) * 5 / 9) * 2) / 2 : 21),
             fan_speed: e.fan_speed || 'AUTO',
             air_direction: e.air_direction || 'HORIZONTAL',
@@ -203,7 +203,7 @@ export const CoherentScheduleEditor: React.FC<CoherentScheduleEditorProps> = ({
               minute: Number(e.minute || 0),
               drive: (e.drive || 'ON') as 'ON' | 'OFF',
               mode: (e.mode || 'AUTO') as OperationMode,
-              set_temp_f: e.set_temp_f ?? (e.set_temp_c ? Math.round((e.set_temp_c * 9 / 5) + 32) : 70),
+              set_temp_f: e.set_temp_f != null ? Math.round(e.set_temp_f * 2) / 2 : (e.set_temp_c ? Math.round(((e.set_temp_c * 9 / 5) + 32) * 2) / 2 : 70),
               set_temp_c: e.set_temp_c ?? (e.set_temp_f ? Math.round(((e.set_temp_f - 32) * 5 / 9) * 2) / 2 : 21),
               fan_speed: e.fan_speed || 'AUTO',
               air_direction: e.air_direction || 'HORIZONTAL',
@@ -280,7 +280,7 @@ export const CoherentScheduleEditor: React.FC<CoherentScheduleEditorProps> = ({
       if (patch.set_temp_f !== undefined && patch.set_temp_c === undefined) {
         updated.set_temp_c = Math.round(((patch.set_temp_f - 32) * 5 / 9) * 2) / 2;
       } else if (patch.set_temp_c !== undefined && patch.set_temp_f === undefined) {
-        updated.set_temp_f = Math.round((patch.set_temp_c * 9 / 5) + 32);
+        updated.set_temp_f = Math.round(((patch.set_temp_c * 9 / 5) + 32) * 2) / 2;
       }
       next[index] = updated;
       return next.sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
@@ -881,7 +881,7 @@ export const CoherentScheduleEditor: React.FC<CoherentScheduleEditorProps> = ({
           {events.map((ev, index) => {
             const isOff = ev.drive === 'OFF';
             const isOn = !isOff;
-            const tempVal = tempUnit === 'F' ? (ev.set_temp_f || 70) : (ev.set_temp_c || 21);
+            const tempVal = tempUnit === 'F' ? (ev.set_temp_f != null ? Math.round(ev.set_temp_f * 2) / 2 : 70) : (ev.set_temp_c || 21);
 
             return (
               <div
@@ -968,12 +968,12 @@ export const CoherentScheduleEditor: React.FC<CoherentScheduleEditorProps> = ({
                         type="number"
                         min={tempUnit === 'F' ? 60 : 16}
                         max={tempUnit === 'F' ? 86 : 30}
-                        step={tempUnit === 'F' ? 1 : 0.5}
+                        step={0.5}
                         value={tempVal}
                         onChange={(e) => {
                           const val = parseFloat(e.target.value);
                           if (tempUnit === 'F') {
-                            handleUpdateEvent(index, { set_temp_f: val });
+                            handleUpdateEvent(index, { set_temp_f: Math.round(val * 2) / 2 });
                           } else {
                             handleUpdateEvent(index, { set_temp_c: val });
                           }

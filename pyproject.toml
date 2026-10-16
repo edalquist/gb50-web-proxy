@@ -8,7 +8,7 @@ include = ["server*"]
 
 [project]
 name = "gb50-web-proxy"
-version = "1.1.4"
+version = "1.1.5"
 description = "FastAPI REST & WebSocket Proxy Server and React Web UI for Mitsubishi GB-50 Central HVAC Controllers"
 readme = "README.md"
 requires-python = ">=3.9"

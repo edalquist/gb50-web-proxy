@@ -561,14 +561,14 @@ class ScheduleDatabase:
                         resolved = ev.resolved_temp_c()
                         if resolved is not None:
                             d["set_temp_c"] = resolved
-                            d["set_temp_f"] = round((resolved * 9.0 / 5.0) + 32.0, 1)
+                            d["set_temp_f"] = round(((resolved * 9.0 / 5.0) + 32.0) * 2.0) / 2.0
                     events_list.append(d)
                 elif isinstance(ev, dict):
                     d = dict(ev)
                     if d.get("set_temp_c") is None and d.get("set_temp_f") is not None:
                         d["set_temp_c"] = round(((float(d["set_temp_f"]) - 32.0) * 5.0 / 9.0) * 2.0) / 2.0
                     elif d.get("set_temp_f") is None and d.get("set_temp_c") is not None:
-                        d["set_temp_f"] = round((float(d["set_temp_c"]) * 9.0 / 5.0) + 32.0, 1)
+                        d["set_temp_f"] = round(((float(d["set_temp_c"]) * 9.0 / 5.0) + 32.0) * 2.0) / 2.0
                     events_list.append(d)
                 else:
                     events_list.append(ev)
@@ -922,10 +922,10 @@ class ScheduleDatabase:
                 if st_c is None and st_f is not None:
                     st_c = round(((float(st_f) - 32.0) * 5.0 / 9.0) * 2.0) / 2.0
                 if st_f is None and st_c is not None:
-                    st_f = round((float(st_c) * 9.0 / 5.0) + 32.0, 1)
+                    st_f = round(((float(st_c) * 9.0 / 5.0) + 32.0) * 2.0) / 2.0
 
                 if st_f is not None and abs(setpoint_offset_f) > 0.01:
-                    new_st_f = max(50.0, min(95.0, round(float(st_f) + setpoint_offset_f, 1)))
+                    new_st_f = max(50.0, min(95.0, round((float(st_f) + setpoint_offset_f) * 2.0) / 2.0))
                     new_st_c = round(((new_st_f - 32.0) * 5.0 / 9.0) * 2.0) / 2.0
                     item["set_temp_f"] = new_st_f
                     item["set_temp_c"] = new_st_c

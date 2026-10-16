@@ -104,7 +104,13 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
   const ModeIcon = modeInfo.icon;
 
   const currentTemp = tempUnit === 'F' ? group.inlet_temp_f : group.inlet_temp_c;
-  const targetTemp = tempUnit === 'F' ? group.set_temp_f : group.set_temp_c;
+  const targetTemp = tempUnit === 'F'
+    ? (group.set_temp_f !== undefined && group.set_temp_f !== null
+        ? Math.round(group.set_temp_f * 2) / 2
+        : (group.set_temp_c !== undefined && group.set_temp_c !== null
+            ? Math.round(((group.set_temp_c * 9 / 5) + 32) * 2) / 2
+            : undefined))
+    : group.set_temp_c;
 
   const handleCardClick = () => {
     if (isSelectionMode) {

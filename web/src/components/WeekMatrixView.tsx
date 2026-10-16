@@ -214,8 +214,8 @@ export const WeekMatrixView: React.FC<WeekMatrixViewProps> = ({
 
                     const tempDisplay = onEvent ? (
                       tempUnit === 'F'
-                        ? (onEvent.set_temp_f ? `${onEvent.set_temp_f}°F` : (onEvent.set_temp_c ? `${Math.round((onEvent.set_temp_c * 9/5) + 32)}°F` : 'ON'))
-                        : (onEvent.set_temp_c ? `${onEvent.set_temp_c}°C` : (onEvent.set_temp_f ? `${Math.round(((onEvent.set_temp_f - 32) * 5/9) * 2)/2}°C` : 'ON'))
+                        ? (onEvent.set_temp_f != null ? `${Math.round(onEvent.set_temp_f * 2) / 2}°F` : (onEvent.set_temp_c != null ? `${Math.round(((onEvent.set_temp_c * 9/5) + 32) * 2) / 2}°F` : 'ON'))
+                        : (onEvent.set_temp_c != null ? `${onEvent.set_temp_c}°C` : (onEvent.set_temp_f != null ? `${Math.round(((onEvent.set_temp_f - 32) * 5/9) * 2)/2}°C` : 'ON'))
                     ) : null;
 
                     return (

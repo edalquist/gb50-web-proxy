@@ -601,7 +601,7 @@ export const AdminDebugView: React.FC<AdminDebugViewProps> = ({
                           </span>
                           {rec.set_temp_c != null && (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-500/30">
-                              {tempUnit === 'F' ? `${Math.round(rec.set_temp_c * 1.8 + 32)}°F` : `${rec.set_temp_c}°C`}
+                              {tempUnit === 'F' ? `${Math.round((rec.set_temp_c * 1.8 + 32) * 2) / 2}°F` : `${rec.set_temp_c}°C`}
                             </span>
                           )}
                         </div>
@@ -702,7 +702,7 @@ export const AdminDebugView: React.FC<AdminDebugViewProps> = ({
                             </span>
                             {rec.set_temp_c != null && (
                               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-500/30">
-                                {tempUnit === 'F' ? `${Math.round(rec.set_temp_c * 1.8 + 32)}°F` : `${rec.set_temp_c}°C`}
+                                {tempUnit === 'F' ? `${Math.round((rec.set_temp_c * 1.8 + 32) * 2) / 2}°F` : `${rec.set_temp_c}°C`}
                               </span>
                             )}
                           </div>

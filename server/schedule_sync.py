@@ -298,7 +298,7 @@ async def sync_group_hardware(client: GB50Client, group_id: int, season: int = 1
                             "drive": (getattr(getattr(item, "drive", None), "value", None) or getattr(item, "drive", None) or (item.get("drive") if isinstance(item, dict) else "OFF") or "OFF"),
                             "mode": (getattr(getattr(item, "mode", None), "value", None) or getattr(item, "mode", None) or (item.get("mode") if isinstance(item, dict) else "AUTO") or "AUTO"),
                             "set_temp_c": getattr(item, "set_temp_c", item.get("set_temp_c") if isinstance(item, dict) else None),
-                            "set_temp_f": round((getattr(item, "set_temp_c", item.get("set_temp_c") if isinstance(item, dict) else None) * 9.0 / 5.0) + 32.0, 1)
+                            "set_temp_f": round(((getattr(item, "set_temp_c", item.get("set_temp_c") if isinstance(item, dict) else None) * 9.0 / 5.0) + 32.0) * 2.0) / 2.0
                             if getattr(item, "set_temp_c", item.get("set_temp_c") if isinstance(item, dict) else None) is not None
                             else None,
                             "fan_speed": (getattr(getattr(item, "fan_speed", None), "value", None) or getattr(item, "fan_speed", None) or (item.get("fan_speed") if isinstance(item, dict) else "") or ""),
@@ -353,7 +353,7 @@ async def reconstruct_schedules_from_controller(
                         "drive": item.drive.value if hasattr(item.drive, "value") else (item.drive or "OFF"),
                         "mode": item.mode.value if hasattr(item.mode, "value") else (item.mode or "AUTO"),
                         "set_temp_c": item.set_temp_c,
-                        "set_temp_f": round((item.set_temp_c * 9.0 / 5.0) + 32.0, 1) if item.set_temp_c else None,
+                        "set_temp_f": round(((item.set_temp_c * 9.0 / 5.0) + 32.0) * 2.0) / 2.0 if item.set_temp_c else None,
                         "fan_speed": item.fan_speed.value if hasattr(item.fan_speed, "value") else (item.fan_speed or ""),
                         "air_direction": item.air_direction.value if hasattr(item.air_direction, "value") else (item.air_direction or ""),
                         "remote_lock": item.remote_lock.value if hasattr(item.remote_lock, "value") else (item.remote_lock or "PERMIT"),

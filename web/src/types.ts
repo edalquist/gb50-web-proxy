@@ -30,9 +30,11 @@ export type FanSpeed = 'LOW' | 'MID2' | 'MID1' | 'HIGH' | 'AUTO' | 'EXLOW';
 export type ModelType = 'IC' | 'LC' | 'OC' | 'BC' | 'SC' | 'RC' | '??';
 
 export interface GroupCapabilities {
+  model?: ModelType;
   has_auto_mode: boolean;
   has_dry_mode: boolean;
   has_fan_speed: boolean;
+  has_auto_fan_speed?: boolean;
   has_air_direction: boolean;
   has_swing: boolean;
   has_ventilation: boolean;
@@ -40,6 +42,7 @@ export interface GroupCapabilities {
   has_heat_recovery: boolean;
   fan_speed_stages: number;
   air_direction_stages: number;
+  supported_fan_speeds?: FanSpeed[];
   temp_min_cool_c: number;
   temp_max_cool_c: number;
   temp_min_heat_c: number;

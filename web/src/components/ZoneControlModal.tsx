@@ -28,6 +28,74 @@ interface ZoneControlModalProps {
   onResetFilter: (groupId: number) => Promise<void>;
 }
 
+interface FanSpeedOption {
+  val: FanSpeed;
+  label: string;
+}
+
+const getFanSpeedOptions = (group: GroupStatus): FanSpeedOption[] => {
+  const caps = group.capabilities;
+  const isLossnay = group.model === 'LC';
+
+  if (caps?.has_fan_speed === false) {
+    return [];
+  }
+
+  // If the backend provided supported_fan_speeds explicitly:
+  if (caps?.supported_fan_speeds && caps.supported_fan_speeds.length > 0) {
+    const stages = caps.fan_speed_stages;
+    return caps.supported_fan_speeds.map((spd) => {
+      if (spd === 'AUTO') return { val: spd, label: 'Auto' };
+      if (isLossnay) {
+        return { val: spd, label: spd === 'LOW' ? 'Low' : 'High' };
+      }
+      if (stages === 2) {
+        return { val: spd, label: spd === 'MID2' ? 'Mid' : 'High' };
+      }
+      if (stages === 3) {
+        if (spd === 'MID2') return { val: spd, label: 'Mid 2' };
+        if (spd === 'MID1') return { val: spd, label: 'Mid 1' };
+        return { val: spd, label: 'High' };
+      }
+      if (spd === 'LOW') return { val: spd, label: 'Low (1)' };
+      if (spd === 'MID2') return { val: spd, label: 'Mid (2)' };
+      if (spd === 'MID1') return { val: spd, label: 'Mid (3)' };
+      return { val: spd, label: 'High (4)' };
+    });
+  }
+
+  // Fallback if supported_fan_speeds not provided
+  if (isLossnay) {
+    return [
+      { val: 'LOW', label: 'Low' },
+      { val: 'HIGH', label: 'High' },
+    ];
+  }
+
+  const stages = caps?.fan_speed_stages ?? 4;
+  const options: FanSpeedOption[] = [];
+
+  if (caps?.has_auto_fan_speed !== false) {
+    options.push({ val: 'AUTO', label: 'Auto' });
+  }
+
+  if (stages === 2) {
+    options.push({ val: 'MID2', label: 'Mid' });
+    options.push({ val: 'HIGH', label: 'High' });
+  } else if (stages === 3) {
+    options.push({ val: 'MID2', label: 'Mid 2' });
+    options.push({ val: 'MID1', label: 'Mid 1' });
+    options.push({ val: 'HIGH', label: 'High' });
+  } else {
+    options.push({ val: 'LOW', label: 'Low (1)' });
+    options.push({ val: 'MID2', label: 'Mid (2)' });
+    options.push({ val: 'MID1', label: 'Mid (3)' });
+    options.push({ val: 'HIGH', label: 'High (4)' });
+  }
+
+  return options;
+};
+
 export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
   group,
   tempUnit,
@@ -101,6 +169,7 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
   };
 
   const isLossnay = group.model === 'LC';
+  const fanOptions = getFanSpeedOptions(group);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
@@ -297,35 +366,54 @@ export const ZoneControlModal: React.FC<ZoneControlModalProps> = ({
 
           {/* Fan Speeds */}
           <div>
-            <span className="font-bold text-xs uppercase tracking-wider text-slate-400 block mb-2">
-              Blower Fan Speed
-            </span>
-            <div className="grid grid-cols-5 gap-2">
-              {[
-                { val: 'AUTO', label: 'Auto' },
-                { val: 'LOW', label: 'Low (1)' },
-                { val: 'MID2', label: 'Mid (2)' },
-                { val: 'MID1', label: 'Mid (3)' },
-                { val: 'HIGH', label: 'High (4)' },
-              ].map(({ val, label }) => (
-                <button
-                  key={val}
-                  onClick={() => !isViewer && setFanSpeed(val as FanSpeed)}
-                  disabled={isViewer}
-                  className={`p-2.5 rounded-xl border text-xs font-semibold transition text-center ${
-                    isViewer
-                      ? fanSpeed === val
-                        ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
-                        : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
-                      : fanSpeed === val
-                      ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500 shadow-md'
-                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-bold text-xs uppercase tracking-wider text-slate-400">
+                {isLossnay ? 'Ventilation Airflow' : 'Blower Fan Speed'}
+              </span>
+              {group.capabilities?.fan_speed_stages && !isLossnay && group.capabilities.has_fan_speed && (
+                <span className="text-[11px] text-slate-400 font-medium">
+                  {group.capabilities.fan_speed_stages}-Stage Fan
+                </span>
+              )}
             </div>
+
+            {fanOptions.length === 0 ? (
+              <p className="text-xs text-slate-500 italic p-2.5 rounded-xl bg-slate-950/40 border border-slate-800 text-center">
+                Fixed fan speed (not adjustable on this unit)
+              </p>
+            ) : (
+              <div
+                className={`grid gap-2 ${
+                  fanOptions.length === 2
+                    ? 'grid-cols-2'
+                    : fanOptions.length === 3
+                    ? 'grid-cols-3'
+                    : fanOptions.length === 4
+                    ? 'grid-cols-4'
+                    : 'grid-cols-5'
+                }`}
+              >
+                {fanOptions.map(({ val, label }) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => !isViewer && setFanSpeed(val as FanSpeed)}
+                    disabled={isViewer}
+                    className={`p-2.5 rounded-xl border text-xs font-semibold transition text-center ${
+                      isViewer
+                        ? fanSpeed === val
+                          ? 'bg-slate-800 text-slate-300 border-slate-700 cursor-not-allowed'
+                          : 'bg-slate-900/40 text-slate-600 border-slate-800/80 cursor-not-allowed'
+                        : fanSpeed === val
+                        ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500 shadow-md'
+                        : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Louver / Air Direction */}

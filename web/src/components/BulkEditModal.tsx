@@ -47,6 +47,7 @@ export const BulkEditModal: React.FC<BulkEditModalProps> = ({
   if (selectedGroups.length === 0) return null;
 
   const isLossnay = selectedGroups[0]?.model === 'LC';
+  const hasOnlyTwoStage = !isLossnay && selectedGroups.every(g => g.capabilities?.fan_speed_stages === 2);
   const groupCount = selectedGroups.length;
 
   // Track which properties are actively being changed
@@ -406,12 +407,17 @@ export const BulkEditModal: React.FC<BulkEditModalProps> = ({
                   </>
                 ) : (
                   <>
-                    {[
+                    {(hasOnlyTwoStage ? [
                       { val: 'AUTO', label: 'Auto' },
-                      { val: 'LOW', label: 'Low' },
                       { val: 'MID2', label: 'Mid' },
                       { val: 'HIGH', label: 'High' },
-                    ].map(({ val, label }) => (
+                    ] : [
+                      { val: 'AUTO', label: 'Auto' },
+                      { val: 'LOW', label: 'Low (1)' },
+                      { val: 'MID2', label: 'Mid (2)' },
+                      { val: 'MID1', label: 'Mid (3)' },
+                      { val: 'HIGH', label: 'High (4)' },
+                    ]).map(({ val, label }) => (
                       <button
                         key={val}
                         type="button"

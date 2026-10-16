@@ -69,6 +69,37 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
     }
   };
 
+  const formatFanSpeed = (group: GroupStatus): string => {
+    if (group.capabilities?.has_fan_speed === false) {
+      return 'Fixed';
+    }
+    const stages = group.capabilities?.fan_speed_stages;
+    if (group.model === 'LC') {
+      if (group.fan_speed === 'LOW') return 'Low';
+      if (group.fan_speed === 'HIGH') return 'High';
+      return group.fan_speed;
+    }
+    if (stages === 2) {
+      if (group.fan_speed === 'MID2') return 'Mid';
+      if (group.fan_speed === 'HIGH') return 'High';
+      if (group.fan_speed === 'AUTO') return 'Auto';
+      return group.fan_speed;
+    }
+    if (stages === 3) {
+      if (group.fan_speed === 'MID2') return 'Mid 2';
+      if (group.fan_speed === 'MID1') return 'Mid 1';
+      if (group.fan_speed === 'HIGH') return 'High';
+      if (group.fan_speed === 'AUTO') return 'Auto';
+      return group.fan_speed;
+    }
+    if (group.fan_speed === 'LOW') return 'Low';
+    if (group.fan_speed === 'MID2') return 'Mid';
+    if (group.fan_speed === 'MID1') return 'Mid-High';
+    if (group.fan_speed === 'HIGH') return 'High';
+    if (group.fan_speed === 'AUTO') return 'Auto';
+    return group.fan_speed;
+  };
+
   const modeInfo = getModeInfo(group.mode);
   const ModeIcon = modeInfo.icon;
 
@@ -204,7 +235,7 @@ export const ZoneCard: React.FC<ZoneCardProps> = ({
         <div className="flex items-center justify-between text-xs text-slate-400 py-1">
           <div className="flex items-center gap-1.5">
             <Fan className="w-3.5 h-3.5 text-slate-400" />
-            <span>Fan: <strong className="text-slate-200">{group.fan_speed}</strong></span>
+            <span>Fan: <strong className="text-slate-200">{formatFanSpeed(group)}</strong></span>
           </div>
 
           <div className="flex items-center gap-1.5">

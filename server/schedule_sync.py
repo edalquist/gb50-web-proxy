@@ -356,6 +356,7 @@ async def reconstruct_schedules_from_controller(
                         "set_temp_f": round((item.set_temp_c * 9.0 / 5.0) + 32.0, 1) if item.set_temp_c else None,
                         "fan_speed": item.fan_speed.value if hasattr(item.fan_speed, "value") else (item.fan_speed or ""),
                         "air_direction": item.air_direction.value if hasattr(item.air_direction, "value") else (item.air_direction or ""),
+                        "remote_lock": item.remote_lock.value if hasattr(item.remote_lock, "value") else (item.remote_lock or "PERMIT"),
                     }
                     for item in items
                 ]
@@ -707,6 +708,7 @@ async def check_schedule_drift(client: GB50Client, season: int = 1) -> Dict[int,
                         "set_temp_c": i.set_temp_c,
                         "fan_speed": i.fan_speed,
                         "air_direction": i.air_direction,
+                        "remote_lock": i.remote_lock,
                     }
                     for i in items
                 ]

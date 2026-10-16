@@ -46,7 +46,7 @@ def create_app(
             "Modern REST API proxy and real-time WebSocket state bridge "
             "for the Mitsubishi GB-50 / AG-150 / G-50 Central Controller."
         ),
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
     )
     app.state.client = client

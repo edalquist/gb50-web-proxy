@@ -14,7 +14,7 @@ Tested and validated against a live Mitsubishi `GB-50ADA-A` running firmware `v2
 ## Key Highlights
 
 * **100% Feature Parity with Legacy Java Applet**: Full administrative replacement for the obsolete Windows 7 / Internet Explorer Java applet, plus modern enhancements.
-* **Non-Expert Friendly Interface**: Intuitive floor-by-floor zone cards, large dual-unit (°F / °C) temperature dials, one-touch church presets ("Sunday Service", "Weekday Office", "All OFF", "Night Setback"), and human-readable dirty filter warning badges with one-click resets. See the comprehensive [User Guide](USER_GUIDE.md) for visual step-by-step documentation.
+* **Non-Expert Friendly Interface**: Intuitive floor-by-floor zone cards, large dual-unit (°F / °C) temperature dials, one-touch church presets ("Sunday Service", "Weekday Office", "All OFF", "Night Setback"), and human-readable dirty filter warning badges with one-click resets. See the comprehensive [User Guide](docs/index.md) for visual step-by-step documentation.
 * **Embeddable Library**: Pure asynchronous Python (`aiohttp` / `asyncio`) with full Pydantic v2 typing. Ready to import directly into a Home Assistant custom component or automation daemon.
 * **Dual-Unit Temperature Support**: Seamless native support for both **Celsius** (`set_temp_c`, `inlet_temp_c`) and **Fahrenheit** (`set_temp_f`, `inlet_temp_f`).
 * **Microsecond Binary Telemetry Decoding**: Decodes the full 65-byte `Bulk` payload in microseconds, extracting 0.1°C room temperatures, fan airflow stages, louver swing angles, capability switches, filter alerts, and alarm flags.

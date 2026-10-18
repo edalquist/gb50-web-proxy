@@ -10,14 +10,14 @@ Access the portal in your browser at `http://<your-controller-address>`.
 ### Dashboard Overview
 The main dashboard displays rooms organized by floor, with live temperatures and equipment states:
 
-![Dashboard Overview](docs/screenshots/01_dashboard_overview.png)
+![Dashboard Overview](screenshots/01_dashboard_overview.png)
 
 ---
 
 ### Reading a Room Card
 Each room card displays real-time telemetry:
 
-![Room Card Detail](docs/screenshots/02_zone_card_detail.png)
+![Room Card Detail](screenshots/02_zone_card_detail.png)
 
 - **Status Badge**: Green (`RUNNING`) when active, gray when turned off.
 - **Temperature**: Large number is current room temperature; smaller badge is target setpoint.
@@ -30,7 +30,7 @@ Each room card displays real-time telemetry:
 ### Adjusting Temperature & Settings
 1. Click **Adjust Settings & Details** on any room card to open the control window:
 
-![Zone Control Modal](docs/screenshots/03_zone_control_modal.png)
+![Zone Control Modal](screenshots/03_zone_control_modal.png)
 
 2. **Power**: Click **POWER ON** or **POWER OFF**.
 3. **Temperature**: Use **`+`** (warmer) or **`−`** (cooler) in 0.5° increments.
@@ -44,7 +44,7 @@ Each room card displays real-time telemetry:
 ### Renaming a Room
 1. In the room control window, click the **Pencil icon** (`✎`) beside the name:
 
-![Inline Rename](docs/screenshots/04_zone_rename_inline.png)
+![Inline Rename](screenshots/04_zone_rename_inline.png)
 
 2. Type the new room name and click the **Checkmark** (`✓`). Changes take effect immediately.
 
@@ -63,7 +63,7 @@ Schedules automatically heat or cool spaces before occupants arrive, and turn eq
 
 Navigate to **Schedules** in the top bar:
 
-![Schedules Hub](docs/screenshots/05_schedules_overview.png)
+![Schedules Hub](screenshots/05_schedules_overview.png)
 
 ---
 
@@ -78,7 +78,7 @@ Navigate to **Schedules** in the top bar:
    - **Stop Event**: Set closing time and choose **TURN OFF**.
    - *(Optional)* Click **+ Add Event** for intermediate temperature setbacks.
 
-![Event Routine and Timeline](docs/screenshots/07_schedule_timeline_events.png)
+![Event Routine and Timeline](screenshots/07_schedule_timeline_events.png)
 
 7. **Review 24-Hour Timeline Bar**: Verify active operating hours on the visual bar.
 8. Click **Save & Flash to Controller** to write the routine permanently into hardware memory.
@@ -99,7 +99,7 @@ Navigate to **Schedules** in the top bar:
 ### Week Matrix View
 Click **Week Matrix** to view all rooms and active schedule blocks across all 7 days:
 
-![Week Matrix](docs/screenshots/08_week_matrix_view.png)
+![Week Matrix](screenshots/08_week_matrix_view.png)
 
 ---
 
@@ -120,7 +120,7 @@ Seasons eliminate reprogramming schedules twice a year:
 ### Setting Season Dates
 1. In **Schedules**, click **Seasons & Tools...** ➔ **Configure Dates...**:
 
-![Seasonal Calendar](docs/screenshots/09_seasonal_calendar_modal.png)
+![Seasonal Calendar](screenshots/09_seasonal_calendar_modal.png)
 
 2. Review the **12-Month Coverage Overview**.
 3. Set **Start Date** and **End Date** for each season (e.g., Summer: April 1 – September 30; Winter: October 1 – March 31).
@@ -132,7 +132,7 @@ Seasons eliminate reprogramming schedules twice a year:
 To transition from Summer to Winter in one click:
 1. Click **Seasons & Tools...** ➔ **Clone Season...**:
 
-![Season Clone](docs/screenshots/10_season_clone_modal.png)
+![Season Clone](screenshots/10_season_clone_modal.png)
 
 2. Set **Source Season** (e.g. *Summer Cooling*) and **Target Season** (e.g. *Winter Heating*).
 3. Select **Mode Transformation**: Choose **Cooling ➔ Heating** (or vice versa).

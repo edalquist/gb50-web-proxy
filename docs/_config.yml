@@ -1,0 +1,7 @@
+title: HVAC Controller User Guide
+description: Quick Reference for Thermostats, Schedules & Seasons
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+highlighter: rouge

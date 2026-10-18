@@ -1,3 +1,9 @@
+---
+layout: default
+title: HVAC Controller User Guide
+description: Quick Reference for Thermostats, Schedules & Seasons
+---
+
 # HVAC Controller User Guide
 ## Quick Reference: Thermostats, Schedules & Seasons
 
